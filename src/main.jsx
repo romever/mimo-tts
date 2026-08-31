@@ -344,17 +344,18 @@ function Waveform({ progress = 0 }) {
 function OutputPanel({ result, audioRef, isPlaying, progress, duration, onToggle, onSeek, onJump, onRename, onDownload }) {
   const hasAudio = Boolean(result.audioUrl);
   const displayDuration = duration || result.duration;
+  const trackDetails = [result.modeLabel, hasAudio && result.format.toUpperCase(), hasAudio && formatTime(displayDuration), hasAudio && result.sizeLabel].filter(Boolean).join(' · ');
   return (
     <section className="output-panel">
       <audio key={result.audioUrl || 'empty-audio'} ref={audioRef} preload="auto" src={result.audioUrl || undefined} onTimeUpdate={(event) => onSeek(event.currentTarget.currentTime / (event.currentTarget.duration || 1), false)} onLoadedMetadata={(event) => onSeek(0, true, event.currentTarget.duration)} onEnded={() => onToggle(false)} />
       <div className="output-heading"><div><span className="section-kicker">最近生成</span><h2>输出结果</h2></div><div className={'generation-status ' + (hasAudio ? 'success' : 'empty')}><span>{hasAudio ? <Check size={13} /> : <Activity size={13} />}</span>{hasAudio ? '生成完成' : '等待生成'}</div></div>
       <div className="output-content">
         <div className="track-badge"><Music2 size={22} /></div>
-        <div className="track-meta"><div className="track-title"><strong>{result.name}</strong><button type="button" aria-label="重命名" disabled={!hasAudio} onClick={onRename}><Settings2 size={13} /></button></div><span>{result.modeLabel}{hasAudio ? ' · ' + result.format.toUpperCase() + ' · ' + formatTime(displayDuration) : ''}</span></div>
+        <div className="track-meta"><div className="track-title"><strong>{result.name}</strong><button type="button" aria-label="重命名" disabled={!hasAudio} onClick={onRename}><Settings2 size={13} /></button></div><span>{trackDetails}</span></div>
         <div className="waveform-wrap"><Waveform progress={hasAudio ? progress : 0} /><div className="track-time">{hasAudio ? formatTime(displayDuration * progress) + ' / ' + formatTime(displayDuration) : '生成后显示音频波形'}</div></div>
         <div className="player-controls"><button type="button" aria-label="后退 10 秒" disabled={!hasAudio} onClick={() => onJump(-10)}><RotateCcw size={17} /></button><button type="button" aria-label="上一段" disabled={!hasAudio} onClick={() => onJump(-5)}><ChevronLeft size={20} /></button><button type="button" className="play-button" disabled={!hasAudio} onClick={() => onToggle()} aria-label={isPlaying ? '暂停' : '播放'}>{isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}</button><button type="button" aria-label="下一段" disabled={!hasAudio} onClick={() => onJump(5)}><ChevronRight size={20} /></button><button type="button" aria-label="前进 10 秒" disabled={!hasAudio} onClick={() => onJump(10)}><RotateCcw size={17} className="flip-x" /></button></div>
         <input className="seek-slider" type="range" min="0" max="1" step="0.001" value={progress} disabled={!hasAudio} aria-label="音频进度" onChange={(event) => onSeek(Number(event.target.value), true)} />
-        <div className="output-actions"><span className="file-size">{result.sizeLabel || '生成后显示文件大小'}</span><button type="button" className="download-button" disabled={!hasAudio} onClick={onDownload}><Download size={16} /> 下载音频 <ChevronDown size={15} /></button></div>
+        <div className="output-actions"><button type="button" className="download-button" disabled={!hasAudio} onClick={onDownload}><Download size={16} /> 下载音频 <ChevronDown size={15} /></button></div>
       </div>
     </section>
   );
@@ -367,13 +368,11 @@ function GenerateButton({ isGenerating, onGenerate, stream }) {
 function Workbench(props) {
   return (
     <div className="workbench-page">
-      <div className="workspace-grid">
-        <div className="editor-column">
-          <TextEditor text={props.text} onChange={props.onTextChange} onInsert={props.onInsert} onClear={props.onClear} />
-          <div className="editor-actions"><div className="text-suggestions">{STYLE_TAGS.map((tag) => <button type="button" key={tag} onClick={() => props.onInsert('（' + tag + '）')}>{tag}</button>)}</div><GenerateButton isGenerating={props.isGenerating} onGenerate={props.onGenerate} stream={props.stream && props.mode === 'preset'} /></div>
-        </div>
-        <Inspector {...props} />
+      <div className="editor-column">
+        <TextEditor text={props.text} onChange={props.onTextChange} onInsert={props.onInsert} onClear={props.onClear} />
+        <div className="editor-actions"><div className="text-suggestions">{STYLE_TAGS.map((tag) => <button type="button" key={tag} onClick={() => props.onInsert('（' + tag + '）')}>{tag}</button>)}</div><GenerateButton isGenerating={props.isGenerating} onGenerate={props.onGenerate} stream={props.stream && props.mode === 'preset'} /></div>
       </div>
+      <Inspector {...props} />
       <OutputPanel result={props.result} audioRef={props.audioRef} isPlaying={props.isPlaying} progress={props.progress} duration={props.duration} onToggle={props.onToggle} onSeek={props.onSeek} onJump={props.onJump} onRename={props.onRename} onDownload={props.onDownload} />
     </div>
   );
@@ -674,7 +673,7 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell ' + (page === 'workbench' ? 'workbench-active' : '')}>
       <Sidebar page={page} onNavigate={setPage} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} apiReady={apiReady} />
       <main className="main-area">
         <Topbar title={title} onOpenMenu={() => setMobileOpen(true)} onOpenApi={() => setPage('api')} />
