@@ -12,6 +12,8 @@ import {
   Clock3,
   Code2,
   Download,
+  Eye,
+  EyeOff,
   FilePlus2,
   History,
   Info,
@@ -37,6 +39,7 @@ import {
 } from 'lucide-react';
 import { syncPlaybackPosition } from './services/audioPlayback';
 import { fileExtensionForAudioBlob, fileToDataUrl, modelIdFor, synthesize } from './services/mimoClient';
+import { loadApiSettings, saveApiSettings } from './services/settingsClient';
 import './styles.css';
 
 const VOICES = [
@@ -85,6 +88,11 @@ function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.floor(seconds % 60);
   return String(minutes).padStart(2, '0') + ':' + String(remainder).padStart(2, '0');
+}
+
+function maskApiKey(apiKey) {
+  if (apiKey.length <= 8) return '••••••••';
+  return apiKey.slice(0, 4) + '••••••••' + apiKey.slice(-4);
 }
 
 function AppIcon({ name, size = 18, strokeWidth = 1.8 }) {
@@ -397,21 +405,56 @@ function HistoryPage({ onReuse }) {
   );
 }
 
-function ApiSettings({ api, onApiChange, onSave }) {
+function ApiSettings({ api, savedApiKey, onApiChange, onSave, persistenceStatus }) {
   const [showKey, setShowKey] = useState(false);
+  const [editingKey, setEditingKey] = useState(false);
+  const statusLabels = {
+    loading: '正在读取',
+    ready: '已连接',
+    saving: '保存中',
+    error: '连接失败',
+  };
+  const statusLabel = statusLabels[persistenceStatus];
+  const isBusy = persistenceStatus === 'loading' || persistenceStatus === 'saving';
+  const hasSavedApiKey = Boolean(savedApiKey);
+  const hasUnsavedKey = api.apiKey !== savedApiKey;
+
+  useEffect(() => {
+    if (persistenceStatus === 'ready' && api.apiKey === savedApiKey) {
+      setEditingKey(false);
+      setShowKey(false);
+    }
+  }, [api.apiKey, persistenceStatus, savedApiKey]);
+
+  const cancelKeyEdit = () => {
+    onApiChange({ apiKey: savedApiKey });
+    setEditingKey(false);
+    setShowKey(false);
+  };
+
   return (
     <div className="page-content settings-page">
-      <div className="page-intro"><div><span className="section-kicker">连接服务</span><h2>API 设置</h2><p>配置 MiMo OpenAI 兼容接口后，即可在工作台生成真实音频。</p></div><span className="secure-badge"><LockKeyhole size={14} /> 当前页面会话</span></div>
+      <div className="page-intro"><div><span className="section-kicker">连接服务</span><h2>API 设置</h2><p>配置 MiMo OpenAI 兼容接口后，即可在工作台生成真实音频。</p></div><span className="secure-badge"><LockKeyhole size={14} /> 本地 SQLite</span></div>
       <div className="settings-layout">
         <section className="settings-card">
-          <div className="settings-card-title"><div className="settings-title-icon"><KeyRound size={18} /></div><div><h3>MiMo API</h3><p>默认使用官方 API Base URL</p></div><span className="settings-status"><span /> 未测试</span></div>
+          <div className="settings-card-title"><div className="settings-title-icon"><KeyRound size={18} /></div><div><h3>MiMo API</h3><p>默认使用官方 API Base URL</p></div><span className={'settings-status ' + persistenceStatus}><span /> {statusLabel}</span></div>
           <label className="form-label">API Base URL</label>
-          <div className="input-with-prefix"><input value={api.endpoint} onChange={(event) => onApiChange({ endpoint: event.target.value })} aria-label="API Base URL" /></div>
+          <div className="input-with-prefix"><input value={api.endpoint} disabled={isBusy} onChange={(event) => onApiChange({ endpoint: event.target.value })} aria-label="API Base URL" /></div>
           <p className="form-help">默认请求路径为 /v1/chat/completions，也支持填入完整的 chat/completions 地址。</p>
           <label className="form-label">API Key</label>
-          <div className="input-with-action"><input type={showKey ? 'text' : 'password'} value={api.apiKey} onChange={(event) => onApiChange({ apiKey: event.target.value })} placeholder="sk-..." aria-label="API Key" /><button type="button" onClick={() => setShowKey((value) => !value)}>{showKey ? '隐藏' : '显示'}</button></div>
-          <div className="security-note"><LockKeyhole size={15} /><span>Key 只保存在当前页面内存，不会写入 localStorage。生产环境建议通过服务端代理调用。</span></div>
-          <div className="settings-actions"><button type="button" className="primary-button" onClick={onSave}><Save size={16} /> 保存设置</button></div>
+          {hasSavedApiKey && !editingKey && !hasUnsavedKey ? (
+            <div className="saved-key-panel">
+              <div className="saved-key-info"><span className="saved-key-icon"><LockKeyhole size={16} /></span><div className="saved-key-copy"><strong>API Key 已保存</strong><span className="saved-key-value">{showKey ? savedApiKey : maskApiKey(savedApiKey)}</span></div></div>
+              <div className="saved-key-actions"><button type="button" disabled={isBusy} onClick={() => setShowKey((value) => !value)}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}{showKey ? '隐藏' : '查看'}</button><button type="button" disabled={isBusy} onClick={() => { setEditingKey(true); setShowKey(false); }}><Settings2 size={14} /> 修改</button></div>
+            </div>
+          ) : (
+            <>
+              <div className="input-with-action"><input type={showKey ? 'text' : 'password'} value={api.apiKey} disabled={isBusy} onChange={(event) => onApiChange({ apiKey: event.target.value })} placeholder="sk-..." aria-label="API Key" /><button type="button" disabled={isBusy} onClick={() => setShowKey((value) => !value)}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}{showKey ? '隐藏' : '查看'}</button></div>
+              <div className="key-edit-actions"><span>{hasSavedApiKey ? '修改后点击“保存设置”' : '保存后将写入本地 SQLite'}</span>{hasSavedApiKey && <button type="button" disabled={isBusy} onClick={cancelKeyEdit}>取消修改</button>}</div>
+            </>
+          )}
+          <div className="security-note"><LockKeyhole size={15} /><span>配置会保存到本项目本地 SQLite 文件；数据库仅由本机服务监听，API 请求仍由浏览器直接发送。</span></div>
+          <div className="settings-actions"><button type="button" className="primary-button" disabled={persistenceStatus === 'loading' || persistenceStatus === 'saving'} onClick={onSave}><Save size={16} /> {persistenceStatus === 'saving' ? '保存中…' : '保存设置'}</button></div>
         </section>
         <section className="settings-card capabilities-card">
           <div className="settings-card-title"><div className="settings-title-icon violet"><WandSparkles size={18} /></div><div><h3>模型能力</h3><p>来自 MiMo TTS v2.5 官方文档</p></div></div>
@@ -442,6 +485,8 @@ function App() {
   const [stream, setStream] = useState(true);
   const [optimizePreview, setOptimizePreview] = useState(true);
   const [api, setApi] = useState({ endpoint: 'https://api.xiaomimimo.com/v1', apiKey: '' });
+  const [savedApiKey, setSavedApiKey] = useState('');
+  const [apiPersistenceStatus, setApiPersistenceStatus] = useState('loading');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -488,6 +533,39 @@ function App() {
   const addTag = (tag) => setTags((current) => current.includes(tag) ? current : [...current, tag]);
   const removeTag = (tag) => setTags((current) => current.filter((item) => item !== tag));
   const showToast = (type, message) => setToast({ type, message });
+
+  useEffect(() => {
+    let active = true;
+    loadApiSettings()
+      .then((savedApi) => {
+        if (!active) return;
+        setApi(savedApi);
+        setSavedApiKey(savedApi.apiKey);
+        setApiPersistenceStatus('ready');
+      })
+      .catch((error) => {
+        if (!active) return;
+        setApiPersistenceStatus('error');
+        showToast('error', error instanceof Error ? error.message : '读取本地 API 配置失败');
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const persistApiSettings = async () => {
+    setApiPersistenceStatus('saving');
+    try {
+      const savedApi = await saveApiSettings(api);
+      setApi(savedApi);
+      setSavedApiKey(savedApi.apiKey);
+      setApiPersistenceStatus('ready');
+      showToast('success', 'API 设置已保存到本地 SQLite');
+    } catch (error) {
+      setApiPersistenceStatus('error');
+      showToast('error', error instanceof Error ? error.message : '保存本地 API 配置失败');
+    }
+  };
 
   const stopVoicePreview = () => {
     previewRequestRef.current += 1;
@@ -604,7 +682,7 @@ function App() {
           {page === 'workbench' && <Workbench mode={mode} onModeChange={changeMode} text={text} onTextChange={setText} onInsert={insertText} onClear={() => setText('')} voice={voice} onVoiceChange={setVoice} styleInstruction={styleInstruction} onStyleChange={setStyleInstruction} voiceDescription={voiceDescription} onVoiceDescriptionChange={setVoiceDescription} cloneFile={cloneFile} onCloneFileChange={setCloneFile} tags={tags} onRemoveTag={removeTag} onAddTag={addTag} format={format} onFormatChange={setFormat} stream={stream} onStreamChange={setStream} optimizePreview={optimizePreview} onOptimizePreview={setOptimizePreview} isGenerating={isGenerating} onGenerate={handleGenerate} result={result} audioRef={audioRef} isPlaying={isPlaying} progress={progress} duration={duration} onToggle={togglePlayback} onSeek={seekAudio} onJump={jumpAudio} onRename={renameAudio} onDownload={downloadAudio} apiReady={apiReady} />}
           {page === 'library' && <VoiceLibrary selectedVoice={voice} onSelect={(nextVoice) => { setVoice(nextVoice); setPage('workbench'); }} onPreview={previewVoice} previewingVoice={previewingVoice} onCreate={() => { setMode('design'); setPage('workbench'); showToast('success', '已切换到设计音色模式'); }} />}
           {page === 'history' && <HistoryPage onReuse={() => { setPage('workbench'); showToast('success', '已将历史配置载入工作台'); }} />}
-          {page === 'api' && <ApiSettings api={api} onApiChange={updateApi} onSave={() => showToast('success', 'API 设置已保存到当前页面会话')} />}
+          {page === 'api' && <ApiSettings api={api} savedApiKey={savedApiKey} onApiChange={updateApi} onSave={persistApiSettings} persistenceStatus={apiPersistenceStatus} />}
         </div>
       </main>
       <audio ref={previewAudioRef} preload="auto" hidden onEnded={stopVoicePreview} />
