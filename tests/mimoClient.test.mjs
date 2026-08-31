@@ -23,27 +23,30 @@ async function createWavBytes() {
 test('非流式响应带 data URL 前缀时仍能得到可播放 WAV', async () => {
   const wavBytes = await createWavBytes();
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
+  let requestBody;
+  globalThis.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({
     choices: [{ message: { audio: { data: 'data:audio/wav;base64,' + encodeBase64(wavBytes) } } }],
-  }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
 
   try {
     const audio = await synthesize({
       endpoint: 'https://api.xiaomimimo.com/v1',
       apiKey: 'test-key',
-      mode: 'preset',
+      voiceProfile: { id: 'preset:冰糖', kind: 'preset', name: '冰糖', providerVoiceId: '冰糖' },
       text: '测试语音',
       styleInstruction: '',
-      voiceDescription: '',
-      voice: '冰糖',
       format: 'wav',
       stream: false,
       optimizeTextPreview: false,
-      cloneVoice: undefined,
     });
+    assert.equal(requestBody.model, 'mimo-v2.5-tts');
+    assert.equal(requestBody.audio.voice, '冰糖');
     assert.equal(audio.type, 'audio/wav');
     assert.equal(Buffer.from(await audio.arrayBuffer()).subarray(0, 4).toString(), 'RIFF');
   } finally {
@@ -70,15 +73,12 @@ test('预置音色流式响应会把 24kHz PCM16 拼接并封装为 WAV', async 
     const audio = await synthesize({
       endpoint: 'https://api.xiaomimimo.com/v1',
       apiKey: 'test-key',
-      mode: 'preset',
+      voiceProfile: { id: 'preset:冰糖', kind: 'preset', name: '冰糖', providerVoiceId: '冰糖' },
       text: '测试流式语音',
       styleInstruction: '',
-      voiceDescription: '',
-      voice: '冰糖',
       format: 'mp3',
       stream: true,
       optimizeTextPreview: false,
-      cloneVoice: undefined,
     });
     const wavBytes = new Uint8Array(await audio.arrayBuffer());
     const wavView = new DataView(wavBytes.buffer);
@@ -90,6 +90,55 @@ test('预置音色流式响应会把 24kHz PCM16 拼接并封装为 WAV', async 
     assert.equal(wavView.getUint16(22, true), 1);
     assert.equal(wavView.getUint16(34, true), 16);
     assert.equal(wavBytes.length, 48);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('设计音色与复刻音色会使用已保存的音色资产映射请求', async () => {
+  const wavBytes = await createWavBytes();
+  const sampleDataUrl = 'data:audio/wav;base64,' + encodeBase64(wavBytes);
+  const originalFetch = globalThis.fetch;
+  const requestBodies = [];
+  globalThis.fetch = async (_url, options) => {
+    requestBodies.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({
+      choices: [{ message: { audio: { data: encodeBase64(wavBytes) } } }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await synthesize({
+      endpoint: 'https://api.xiaomimimo.com/v1',
+      apiKey: 'test-key',
+      voiceProfile: { id: 'design-1', kind: 'design', name: '深夜女声', voiceDescription: '温柔、清亮、语速稍慢。' },
+      text: '设计音色测试',
+      styleInstruction: '本次生成要自然',
+      format: 'wav',
+      stream: false,
+      optimizeTextPreview: true,
+    });
+    await synthesize({
+      endpoint: 'https://api.xiaomimimo.com/v1',
+      apiKey: 'test-key',
+      voiceProfile: { id: 'clone-1', kind: 'clone', name: '样本女声', sampleDataUrl },
+      text: '复刻音色测试',
+      styleInstruction: '本次生成要清晰',
+      format: 'wav',
+      stream: false,
+      optimizeTextPreview: false,
+    });
+    assert.equal(requestBodies[0].model, 'mimo-v2.5-tts-voicedesign');
+    assert.equal(requestBodies[0].messages[0].content, '温柔、清亮、语速稍慢。');
+    assert.equal(requestBodies[0].audio.optimize_text_preview, true);
+    assert.equal(requestBodies[0].temperature, 0.2);
+    assert.equal(requestBodies[1].model, 'mimo-v2.5-tts-voiceclone');
+    assert.equal(requestBodies[1].audio.voice, sampleDataUrl);
+    assert.equal(requestBodies[1].messages[0].content, '本次生成要清晰');
+    assert.equal(requestBodies[1].temperature, 0.2);
   } finally {
     globalThis.fetch = originalFetch;
   }

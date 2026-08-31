@@ -4,6 +4,9 @@ const MODEL_IDS = {
   clone: 'mimo-v2.5-tts-voiceclone',
 };
 
+// 设计与复刻音色都需要跨请求保持声音身份，固定较低温度以减少听感上的随机漂移。
+const LOW_VARIANCE_TTS_TEMPERATURE = 0.2;
+
 export function modelIdFor(mode) {
   const modelId = MODEL_IDS[mode];
   if (!modelId) {
@@ -167,9 +170,9 @@ async function readStreamingAudio(response) {
   return pcm16ToWav(concatBytes(chunks));
 }
 
-function buildMessages({ mode, text, styleInstruction, voiceDescription }) {
+function buildMessages({ voiceProfile, text, styleInstruction }) {
   const messages = [];
-  const userContent = mode === 'design' ? voiceDescription.trim() : styleInstruction.trim();
+  const userContent = voiceProfile.kind === 'design' ? voiceProfile.voiceDescription.trim() : styleInstruction.trim();
   if (userContent) {
     messages.push({ role: 'user', content: userContent });
   }
@@ -177,22 +180,42 @@ function buildMessages({ mode, text, styleInstruction, voiceDescription }) {
   return messages;
 }
 
+function validateVoiceProfile(voiceProfile) {
+  if (!voiceProfile || typeof voiceProfile !== 'object' || !['preset', 'design', 'clone'].includes(voiceProfile.kind)) {
+    throw new Error('未选择有效的音色');
+  }
+  if (voiceProfile.kind === 'preset' && typeof voiceProfile.providerVoiceId !== 'string') {
+    throw new Error('预置音色缺少 MiMo 音色 ID');
+  }
+  if (voiceProfile.kind === 'design' && (typeof voiceProfile.voiceDescription !== 'string' || !voiceProfile.voiceDescription.trim())) {
+    throw new Error('设计音色缺少音色描述');
+  }
+  if (voiceProfile.kind === 'clone' && (typeof voiceProfile.sampleDataUrl !== 'string' || !voiceProfile.sampleDataUrl.startsWith('data:'))) {
+    throw new Error('音色复刻缺少有效的样本数据');
+  }
+}
+
 export async function synthesize({
   endpoint,
   apiKey,
-  mode,
+  voiceProfile,
   text,
   styleInstruction,
-  voiceDescription,
-  voice,
   format,
   stream,
   optimizeTextPreview,
-  cloneVoice,
 }) {
   if (!apiKey.trim()) {
     throw new Error('请先在 API 设置中配置 API Key');
   }
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('合成文本不能为空');
+  }
+  if (typeof styleInstruction !== 'string') {
+    throw new Error('风格指令必须是字符串');
+  }
+  validateVoiceProfile(voiceProfile);
+  const mode = voiceProfile.kind;
 
   const effectiveStream = mode === 'preset' && stream;
   const outputFormat = outputFormatFor({ mode, format, stream });
@@ -201,13 +224,23 @@ export async function synthesize({
   };
 
   if (mode === 'preset') {
-    audio.voice = voice;
+    audio.voice = voiceProfile.providerVoiceId;
   }
   if (mode === 'design') {
     audio.optimize_text_preview = optimizeTextPreview;
   }
   if (mode === 'clone') {
-    audio.voice = cloneVoice;
+    audio.voice = voiceProfile.sampleDataUrl;
+  }
+
+  const requestBody = {
+    model: modelIdFor(mode),
+    messages: buildMessages({ voiceProfile, text, styleInstruction }),
+    audio,
+    stream: effectiveStream,
+  };
+  if (mode === 'design' || mode === 'clone') {
+    requestBody.temperature = LOW_VARIANCE_TTS_TEMPERATURE;
   }
 
   const response = await fetch(completionUrl(endpoint), {
@@ -216,12 +249,7 @@ export async function synthesize({
       'Content-Type': 'application/json',
       Authorization: 'Bearer ' + apiKey.trim(),
     },
-    body: JSON.stringify({
-      model: modelIdFor(mode),
-      messages: buildMessages({ mode, text, styleInstruction, voiceDescription }),
-      audio,
-      stream: effectiveStream,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {

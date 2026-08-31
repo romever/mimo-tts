@@ -2,6 +2,7 @@ import { chmod, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { initializeVoiceTables } from './voiceStore.mjs';
 
 export const DEFAULT_API_ENDPOINT = 'https://api.xiaomimimo.com/v1';
 
@@ -27,6 +28,7 @@ export async function openDatabase(databasePath = resolveDatabasePath()) {
       updated_at TEXT NOT NULL
     )
   `);
+  initializeVoiceTables(database);
   return database;
 }
 

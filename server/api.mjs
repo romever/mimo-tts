@@ -1,10 +1,23 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { openDatabase, readApiSettings, resolveDatabasePath, writeApiSettings } from './database.mjs';
+import {
+  createVoice,
+  deleteVoice,
+  getVoice,
+  listVoices,
+  readFavoriteVoiceIds,
+  readVoiceSample,
+  updateVoice,
+  VoiceStoreError,
+  writeFavoriteVoice,
+} from './voiceStore.mjs';
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8787;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_VOICE_BODY_BYTES = 16 * 1024 * 1024;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -32,7 +45,7 @@ function sendJson(response, status, payload) {
   response.end(body);
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, maxBytes = MAX_BODY_BYTES, tooLargeMessage = '请求体不能超过 64 KB') {
   const contentType = request.headers['content-type'] || '';
   if (!contentType.includes('application/json')) {
     throw new HttpError(415, '请求必须使用 application/json');
@@ -42,8 +55,8 @@ async function readJsonBody(request) {
   let totalBytes = 0;
   for await (const chunk of request) {
     totalBytes += chunk.length;
-    if (totalBytes > MAX_BODY_BYTES) {
-      throw new HttpError(413, '请求体不能超过 64 KB');
+    if (totalBytes > maxBytes) {
+      throw new HttpError(413, tooLargeMessage);
     }
     chunks.push(chunk);
   }
@@ -91,9 +104,36 @@ function hashApiKey(apiKey) {
   return createHash('sha256').update(apiKey).digest('hex').slice(0, 12);
 }
 
+function decodePathSegment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new HttpError(400, '请求路径中的音色 ID 无效');
+  }
+}
+
+function validateFavoritePayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || typeof payload.favorite !== 'boolean') {
+    throw new HttpError(400, 'favorite 必须是布尔值');
+  }
+  return payload.favorite;
+}
+
+function sendAudio(response, sample) {
+  const safeFileName = sample.fileName.replace(/[\\\r\n"/]/g, '_');
+  response.writeHead(200, {
+    'Cache-Control': 'no-store',
+    'Content-Type': sample.mimeType,
+    'Content-Length': sample.bytes.length,
+    'Content-Disposition': 'inline; filename="' + safeFileName + '"',
+  });
+  response.end(sample.bytes);
+}
+
 const port = resolvePort();
 const databasePath = resolveDatabasePath();
 const database = await openDatabase(databasePath);
+const voiceStorageDirectory = path.resolve(path.dirname(databasePath), 'voices');
 
 const server = createServer((request, response) => {
   const requestUrl = new URL(request.url || '/', 'http://' + HOST);
@@ -116,11 +156,69 @@ const server = createServer((request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/voices' && request.method === 'GET') {
+      sendJson(response, 200, {
+        voices: await listVoices(database, voiceStorageDirectory),
+        favoriteIds: readFavoriteVoiceIds(database),
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/voices' && request.method === 'POST') {
+      const voice = await createVoice(database, voiceStorageDirectory, await readJsonBody(request, MAX_VOICE_BODY_BYTES, '音色请求体不能超过 16 MB'));
+      console.log('已创建本地音色（ID：' + voice.id + '，类型：' + voice.kind + '）');
+      sendJson(response, 201, voice);
+      return;
+    }
+
+    const voiceSampleMatch = /^\/api\/voices\/([^/]+)\/sample$/.exec(requestUrl.pathname);
+    if (voiceSampleMatch && request.method === 'GET') {
+      const sample = await readVoiceSample(database, voiceStorageDirectory, decodePathSegment(voiceSampleMatch[1]));
+      sendAudio(response, sample);
+      return;
+    }
+
+    const voiceMatch = /^\/api\/voices\/([^/]+)$/.exec(requestUrl.pathname);
+    if (voiceMatch) {
+      const voiceId = decodePathSegment(voiceMatch[1]);
+      if (request.method === 'GET') {
+        sendJson(response, 200, await getVoice(database, voiceStorageDirectory, voiceId));
+        return;
+      }
+      if (request.method === 'PATCH') {
+        const voice = await updateVoice(database, voiceStorageDirectory, voiceId, await readJsonBody(request, MAX_VOICE_BODY_BYTES, '音色请求体不能超过 16 MB'));
+        console.log('已更新本地音色（ID：' + voice.id + '）');
+        sendJson(response, 200, voice);
+        return;
+      }
+      if (request.method === 'DELETE') {
+        await deleteVoice(database, voiceStorageDirectory, voiceId);
+        console.log('已删除本地音色（ID：' + voiceId + '）');
+        response.writeHead(204, { 'Cache-Control': 'no-store' });
+        response.end();
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/voice-preferences' && request.method === 'GET') {
+      sendJson(response, 200, { favoriteIds: readFavoriteVoiceIds(database) });
+      return;
+    }
+
+    const preferenceMatch = /^\/api\/voice-preferences\/([^/]+)$/.exec(requestUrl.pathname);
+    if (preferenceMatch && request.method === 'PUT') {
+      const voiceId = decodePathSegment(preferenceMatch[1]);
+      const favorite = validateFavoritePayload(await readJsonBody(request));
+      writeFavoriteVoice(database, voiceId, favorite);
+      sendJson(response, 200, { voiceId, favorite });
+      return;
+    }
+
     throw new HttpError(404, '未找到请求的本地接口');
   };
 
   handleRequest().catch((error) => {
-    if (error instanceof HttpError) {
+    if (error instanceof HttpError || error instanceof VoiceStoreError) {
       sendJson(response, error.status, { error: error.message });
       return;
     }
