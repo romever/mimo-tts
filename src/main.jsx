@@ -66,9 +66,11 @@ const VOICES = [
 ];
 
 const PRESET_VOICE_PREFIX = 'preset:';
+const VOICE_DRAFT_ID = 'voice-draft';
 const MAX_CLONE_BASE64_BYTES = 10 * 1024 * 1024;
 const CLONE_MIME_TYPES = new Set(['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav']);
 const DEFAULT_VOICE_DESCRIPTION = '一位年轻女性，音色清亮柔和，语速稍慢，像深夜电台主持人一样亲切。';
+const DEFAULT_PREVIEW_TEXT = '你好，这是 MiMo TTS Studio 的音色试听。';
 
 function presetProfile(voice, favoriteIds) {
   const id = PRESET_VOICE_PREFIX + voice.id;
@@ -82,6 +84,7 @@ function presetProfile(voice, favoriteIds) {
     color: voice.color,
     providerVoiceId: voice.id,
     voiceDescription: '',
+    previewText: null,
     sample: null,
     readOnly: true,
     favorite: favoriteIds.has(id),
@@ -528,9 +531,10 @@ function VoiceDetailDrawer({ voice, sourceVoiceName, onClose, onUse, onPreview, 
         <div className="voice-detail-hero"><span className={'voice-detail-icon ' + voice.color}><Icon size={24} /></span><div><strong>{profileTypeLabel(voice)}</strong><span>{voice.kind === 'preset' ? voice.gender + ' · ' + voice.language : voice.kind === 'design' ? '本地保存的描述配置' : '本地保存的音频样本'}</span></div><button type="button" className={'detail-favorite ' + (voice.favorite ? 'active' : '')} aria-label={(voice.favorite ? '取消收藏 ' : '收藏 ') + voice.name} onClick={() => onToggleFavorite(voice)}><Star size={17} fill={voice.favorite ? 'currentColor' : 'none'} /></button></div>
         <div className="voice-detail-content">
           <div className="voice-detail-block"><span className="detail-label">音色信息</span><p>{voice.kind === 'preset' ? voice.tone : voice.kind === 'design' ? voice.voiceDescription : isCloneUnavailable ? '样本文件不存在，暂时无法生成。' : '样本文件：' + voice.sample.fileName}</p></div>
+          {voice.kind === 'design' && <div className="voice-detail-block preview-text-block"><span className="detail-label">试听文本</span><p>{voice.previewText?.trim() || DEFAULT_PREVIEW_TEXT}</p><small>{voice.previewText?.trim() ? '已使用自定义试听文本' : '未配置，使用默认试听文本'}</small></div>}
           {voice.kind === 'clone' && <div className={'sample-status ' + (isCloneUnavailable ? 'error' : '')}><Mic2 size={15} /><span>{isCloneUnavailable ? '样本不可用，请编辑音色并重新上传' : '复刻样本已保存在本机'}</span></div>}
           {voice.kind === 'clone' && voice.sourceVoiceId && <div className="voice-detail-origin"><WandSparkles size={14} /><span>复刻自：{sourceVoiceName || '已删除的设计音色'}</span></div>}
-          <div className="voice-detail-note"><LockKeyhole size={14} /><span>{voice.kind === 'clone' ? '试听样本会直接播放已保存的参考音频；在工作台生成新文本时才会调用复刻模型。' : '声音库只保存音色配置；当前文本、风格指令和音频标签仍属于单次生成。'}</span></div>
+          <div className="voice-detail-note"><LockKeyhole size={14} /><span>{voice.kind === 'clone' ? '试听样本会直接播放已保存的参考音频；在工作台生成新文本时才会调用复刻模型。' : voice.kind === 'design' ? '自定义试听文本只影响声音库试听；工作台生成仍使用当前输入文本。' : '声音库只保存音色配置；当前文本、风格指令和音频标签仍属于单次生成。'}</span></div>
         </div>
         {voice.kind === 'design' && !voice.readOnly && <div className={'voice-detail-solidify ' + (previewSampleReady ? 'ready' : 'needs-preview')}><div><strong>{previewSampleReady ? '试听样本已准备好' : '先试听，再保存复刻音色'}</strong><p>{previewSampleReady ? '将刚刚试听的同一段声音保存为独立的复刻音色。' : '请先点击下方“试听”，满意后即可保存这段实际声音。'}</p></div><button type="button" className="solidify-button" disabled={!previewSampleReady} onClick={() => onSolidify(voice)}><Mic2 size={14} /> {previewSampleReady ? '保存试听为复刻' : '请先试听'}</button></div>}
         <div className="drawer-actions"><button type="button" className="secondary-button" disabled={isCloneUnavailable} onClick={() => onPreview(voice)}>{previewingVoice === voice.id ? <LoaderCircle size={15} className="spin" /> : <Play size={15} fill="currentColor" />} {previewingVoice === voice.id ? '停止试听' : voice.kind === 'clone' ? '试听样本' : '试听'}</button><button type="button" className="primary-button" disabled={isCloneUnavailable} onClick={() => onUse(voice)}><AudioLines size={15} /> 在工作台使用</button></div>
@@ -544,7 +548,9 @@ function VoiceEditorDrawer({ voice, initialKind, initialValues, saving, onClose,
   const [kind, setKind] = useState(voice?.kind || initialKind || 'design');
   const [name, setName] = useState(voice?.name || initialValues?.name || '');
   const [description, setDescription] = useState(voice?.voiceDescription || initialValues?.voiceDescription || DEFAULT_VOICE_DESCRIPTION);
+  const [previewText, setPreviewText] = useState(voice?.previewText || initialValues?.previewText || '');
   const [sample, setSample] = useState(() => voice?.kind === 'clone' && voice.sample ? { fileName: voice.sample.fileName, mimeType: voice.sample.mimeType, size: voice.sample.size, existing: true } : initialValues?.sample || null);
+  const [previewSample, setPreviewSample] = useState(null);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
 
@@ -552,7 +558,9 @@ function VoiceEditorDrawer({ voice, initialKind, initialValues, saving, onClose,
     setKind(voice?.kind || initialKind || 'design');
     setName(voice?.name || initialValues?.name || '');
     setDescription(voice?.voiceDescription || initialValues?.voiceDescription || DEFAULT_VOICE_DESCRIPTION);
+    setPreviewText(voice?.previewText || initialValues?.previewText || '');
     setSample(voice?.kind === 'clone' && voice.sample ? { fileName: voice.sample.fileName, mimeType: voice.sample.mimeType, size: voice.sample.size, existing: true } : initialValues?.sample || null);
+    setPreviewSample(null);
     setError('');
   }, [voice, initialKind, initialValues]);
 
@@ -573,6 +581,7 @@ function VoiceEditorDrawer({ voice, initialKind, initialValues, saving, onClose,
     kind,
     name: name.trim(),
     voiceDescription: kind === 'design' ? description.trim() : undefined,
+    previewText: kind === 'design' ? previewText.trim() : undefined,
     sampleDataUrl: kind === 'clone' ? sample?.dataUrl : undefined,
     sampleFileName: kind === 'clone' ? sample?.fileName : undefined,
     sourceVoiceId: kind === 'clone' ? initialValues?.sourceVoiceId : undefined,
@@ -589,6 +598,7 @@ function VoiceEditorDrawer({ voice, initialKind, initialValues, saving, onClose,
   const editorDirty = Boolean(
     name.trim() !== (voice?.name || initialValues?.name || '').trim()
     || description.trim() !== (voice?.voiceDescription || initialValues?.voiceDescription || DEFAULT_VOICE_DESCRIPTION).trim()
+    || previewText.trim() !== (voice?.previewText || initialValues?.previewText || '').trim()
     || kind !== (voice?.kind || initialKind || 'design')
     || Boolean(sample?.dataUrl),
   );
@@ -597,13 +607,36 @@ function VoiceEditorDrawer({ voice, initialKind, initialValues, saving, onClose,
     onClose();
   };
 
-  const handlePreview = () => {
+  const handlePreview = async () => {
     const validationError = validateDraft();
     if (validationError) {
       setError(validationError);
       return;
     }
-    onPreview(buildDraft());
+    const draft = buildDraft();
+    const previewResult = await onPreview(draft);
+    if (draft.kind === 'design' && previewResult?.sample) {
+      setPreviewSample(previewResult.sample);
+      setError('');
+    }
+  };
+
+  const handleSavePreviewAsClone = () => {
+    if (!name.trim()) {
+      setError('请先填写音色名称');
+      return;
+    }
+    try {
+      const cloneDraft = buildCloneDraftFromPreview({ kind: 'design', name: name.trim() }, previewSample);
+      setKind('clone');
+      setDescription('');
+      setPreviewText('');
+      setSample({ ...cloneDraft.sample, fromPreview: true });
+      setPreviewSample(null);
+      setError('');
+    } catch (cloneError) {
+      setError(cloneError instanceof Error ? cloneError.message : '请先试听设计音色');
+    }
   };
 
   const handleSubmit = async (useAfterSave) => {
@@ -625,16 +658,17 @@ function VoiceEditorDrawer({ voice, initialKind, initialValues, saving, onClose,
       <button type="button" className="drawer-scrim" aria-label="关闭音色编辑" onClick={closeEditor} />
       <aside className="voice-drawer editor-drawer" role="dialog" aria-modal="true" aria-labelledby="voice-editor-title">
         <div className="drawer-header"><div><span className="section-kicker">{voice ? '编辑资产' : '新建资产'}</span><h2 id="voice-editor-title">{voice ? '编辑音色' : '创建音色'}</h2></div><button type="button" className="drawer-close" aria-label="关闭" onClick={closeEditor}><X size={17} /></button></div>
-        {!voice && <div className="editor-kind-picker"><span className="detail-label">音色类型</span><div><button type="button" className={kind === 'design' ? 'active' : ''} onClick={() => { setKind('design'); setSample(null); }}><WandSparkles size={15} /> 设计音色</button><button type="button" className={kind === 'clone' ? 'active' : ''} onClick={() => { setKind('clone'); setDescription(''); }}><Mic2 size={15} /> 音色复刻</button></div></div>}
+        {!voice && <div className="editor-kind-picker"><span className="detail-label">音色类型</span><div><button type="button" className={kind === 'design' ? 'active' : ''} onClick={() => { setKind('design'); setSample(null); setPreviewSample(null); }}><WandSparkles size={15} /> 设计音色</button><button type="button" className={kind === 'clone' ? 'active' : ''} onClick={() => { setKind('clone'); setDescription(''); setPreviewText(''); setPreviewSample(null); }}><Mic2 size={15} /> 音色复刻</button></div></div>}
         <form className="voice-form" onSubmit={(event) => { event.preventDefault(); handleSubmit(false); }}>
           <label className="form-label" htmlFor="voice-name">音色名称</label>
           <input id="voice-name" name="name" className="drawer-input" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} placeholder="例如：深夜电台女声" autoFocus />
           {kind === 'design' ? (
-            <><div className="field-label-row"><label htmlFor="voice-description">音色描述</label><button type="button" className="help-link" onClick={() => setDescription(DEFAULT_VOICE_DESCRIPTION)}><CircleHelp size={14} /> 示例</button></div><textarea id="voice-description" name="voiceDescription" className="compact-textarea editor-description" value={description} maxLength={600} onChange={(event) => setDescription(event.target.value)} placeholder="描述性别、年龄、音色质感、语速和说话方式。" /><div className="textarea-count">{description.length} / 600</div></>
+            <><div className="field-label-row"><label htmlFor="voice-description">音色描述</label><button type="button" className="help-link" onClick={() => { setDescription(DEFAULT_VOICE_DESCRIPTION); setPreviewSample(null); }}><CircleHelp size={14} /> 示例</button></div><textarea id="voice-description" name="voiceDescription" className="compact-textarea editor-description" value={description} maxLength={600} onChange={(event) => { setDescription(event.target.value); setPreviewSample(null); }} placeholder="描述性别、年龄、音色质感、语速和说话方式。" /><div className="textarea-count">{description.length} / 600</div><div className="field-label-row preview-text-label"><label htmlFor="voice-preview-text">试听文本</label><span className="field-note">可选 · 最多 500 字</span></div><textarea id="voice-preview-text" name="previewText" className="compact-textarea preview-textarea" value={previewText} maxLength={500} onChange={(event) => { setPreviewText(event.target.value); setPreviewSample(null); }} placeholder={DEFAULT_PREVIEW_TEXT} /><div className="textarea-count">{previewText.length} / 500</div></>
           ) : (
             <><div className="field-label-row"><label htmlFor="voice-editor-sample-file">音色样本</label><span className="field-note">MP3 / WAV · Base64 ≤ 10 MB</span></div><button type="button" className={'upload-box editor-upload ' + (sample?.dataUrl || sample?.existing ? 'has-file' : '')} onClick={() => inputRef.current?.click()}><input id="voice-editor-sample-file" name="sample" ref={inputRef} type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden aria-label="上传音色样本" onChange={handleFileChange} />{sample?.fileName ? <><span className="upload-icon success"><Check size={18} /></span><span className="upload-copy"><strong>{sample.fileName}</strong><small>{sample.size ? (sample.size / 1024 / 1024).toFixed(2) + ' MB · ' : ''}{sample.existing ? '已保存，选择新文件可替换' : '已准备好'}</small></span><ChevronRight size={16} /></> : <><span className="upload-icon"><UploadCloud size={18} /></span><span className="upload-copy"><strong>上传音色样本</strong><small>点击选择 MP3 或 WAV 文件</small></span><ChevronRight size={16} /></>}</button></>
           )}
-          <div className="voice-form-note"><LockKeyhole size={14} /><span>{initialValues?.sourceVoiceId ? '该参考样本由设计音色生成，保存后会成为独立的复刻音色；修改原设计不会影响它。' : '保存后可在声音库和工作台中反复使用；当前文本与风格标签不会写入音色。'}</span></div>
+          {kind === 'design' && !voice && <div className={'editor-preview-clone ' + (previewSample ? 'ready' : 'locked')}><div><strong>试听满意后，保存为复刻</strong><p>{previewSample ? '下面的操作会复用刚刚试听的同一份声音样本。' : '先点击“试听草稿”，试听成功后这里会解锁。'}</p></div><button type="button" className="solidify-button" disabled={!previewSample || saving} onClick={handleSavePreviewAsClone}><Mic2 size={14} /> {previewSample ? '将试听保存为复刻' : '试听后可复刻'}</button></div>}
+          <div className="voice-form-note"><LockKeyhole size={14} /><span>{sample?.fromPreview ? '这是刚刚试听的同一份声音样本；保存后会成为独立的复刻音色。' : initialValues?.sourceVoiceId ? '该参考样本由设计音色生成，保存后会成为独立的复刻音色；修改原设计不会影响它。' : kind === 'design' ? '自定义试听文本只影响声音库试听；工作台生成仍使用当前输入文本。' : '保存后可在声音库和工作台中反复使用；当前文本与风格标签不会写入音色。'}</span></div>
           {error && <p className="error-text drawer-error">{error}</p>}
           <div className="drawer-actions editor-actions-row"><button type="button" className="secondary-button" onClick={handlePreview} disabled={saving}><Play size={15} fill="currentColor" /> 试听草稿</button><button type="submit" className="secondary-button" disabled={saving}>{saving ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />} {voice ? '保存修改' : '保存音色'}</button><button type="button" className="primary-button" onClick={() => handleSubmit(true)} disabled={saving}><AudioLines size={15} /> 保存并使用</button></div>
         </form>
@@ -960,7 +994,7 @@ function App() {
           endpoint: api.endpoint,
           apiKey: api.apiKey,
           voiceProfile,
-          text: '你好，这是 MiMo TTS Studio 的音色试听。',
+          text: voiceProfile.kind === 'design' ? voiceProfile.previewText?.trim() || DEFAULT_PREVIEW_TEXT : DEFAULT_PREVIEW_TEXT,
           styleInstruction: '语气自然、清晰、亲切，适合试听音色。',
           format: 'wav',
           stream: false,
@@ -972,7 +1006,8 @@ function App() {
         if (base64LengthFromDataUrl(sampleDataUrl) > MAX_CLONE_BASE64_BYTES) {
           throw new Error('生成的试听样本超过 10 MB，无法保存为复刻音色');
         }
-        if (voiceToPreview.kind === 'design' && voiceToPreview.id !== 'voice-draft') {
+        if (voiceProfile.kind === 'design') {
+          // 新建设计草稿没有持久化 ID，但试听样本仍要返回创建面板用于复刻。
           previewSample = {
             dataUrl: sampleDataUrl,
             fileName: voiceToPreview.name + '-试听.' + fileExtensionForAudioBlob(audioBlob),
@@ -988,11 +1023,12 @@ function App() {
       previewAudio.load();
       await previewAudio.play();
       if (requestId === previewRequestRef.current) {
-        if (previewSample) {
+        if (previewSample && voiceProfile.id !== VOICE_DRAFT_ID) {
           previewSampleCacheRef.current.set(voiceToPreview.id, previewSample);
           setPreviewSampleReadyVoiceId(voiceToPreview.id);
         }
         showToast('success', voiceToPreview.name + (voiceProfile.kind === 'clone' ? '样本试听已开始' : '试听已开始'));
+        return previewSample ? { sample: previewSample } : null;
       }
     } catch (error) {
       if (requestId !== previewRequestRef.current) return;
@@ -1004,11 +1040,12 @@ function App() {
   const previewDraft = async (draft) => {
     try {
       const voiceProfile = {
-        id: draft.voiceId || 'voice-draft',
+        id: draft.voiceId || VOICE_DRAFT_ID,
         kind: draft.kind,
         name: draft.name || '音色草稿',
         providerVoiceId: draft.kind === 'preset' ? draft.providerVoiceId : undefined,
         voiceDescription: draft.voiceDescription,
+        previewText: draft.previewText,
         sampleDataUrl: draft.sampleDataUrl,
       };
       if (voiceProfile.kind === 'clone' && !voiceProfile.sampleDataUrl) {

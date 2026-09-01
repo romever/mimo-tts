@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 const VOICE_KINDS = new Set(['design', 'clone']);
 const MAX_NAME_LENGTH = 80;
 const MAX_DESCRIPTION_LENGTH = 600;
+const MAX_PREVIEW_TEXT_LENGTH = 500;
 const MAX_CLONE_BASE64_BYTES = 10 * 1024 * 1024;
 const SAMPLE_MIME_TYPES = {
   'audio/mpeg': 'mp3',
@@ -27,6 +28,7 @@ export function initializeVoiceTables(database) {
       kind TEXT NOT NULL CHECK(kind IN ('design', 'clone')),
       name TEXT NOT NULL COLLATE NOCASE UNIQUE,
       voice_description TEXT,
+      preview_text TEXT,
       sample_file TEXT,
       sample_mime_type TEXT,
       sample_file_name TEXT,
@@ -49,6 +51,9 @@ export function initializeVoiceTables(database) {
   `);
 
   const columns = database.prepare('PRAGMA table_info(voices)').all();
+  if (!columns.some((column) => column.name === 'preview_text')) {
+    database.exec('ALTER TABLE voices ADD COLUMN preview_text TEXT');
+  }
   if (!columns.some((column) => column.name === 'source_voice_id')) {
     database.exec('ALTER TABLE voices ADD COLUMN source_voice_id TEXT');
   }
@@ -80,6 +85,18 @@ function validateDescription(description) {
     throw new VoiceStoreError(400, '音色描述不能超过 600 个字符');
   }
   return normalized;
+}
+
+function validatePreviewText(previewText) {
+  if (previewText === undefined || previewText === null) return null;
+  if (typeof previewText !== 'string') {
+    throw new VoiceStoreError(400, '试听文本必须是字符串');
+  }
+  const normalized = previewText.trim();
+  if (normalized.length > MAX_PREVIEW_TEXT_LENGTH) {
+    throw new VoiceStoreError(400, '试听文本不能超过 500 个字符');
+  }
+  return normalized || null;
 }
 
 function validateBase64(base64) {
@@ -149,6 +166,7 @@ function rowToVoice(row, sampleAvailable = true) {
     kind: row.kind,
     name: row.name,
     voiceDescription: row.voice_description,
+    previewText: row.preview_text ?? null,
     sourceVoiceId: row.source_voice_id ?? null,
     sample,
     createdAt: row.created_at,
@@ -281,14 +299,21 @@ function buildCreatePayload(payload) {
     if (payload.sampleDataUrl !== undefined || payload.sourceVoiceId !== undefined) {
       throw new VoiceStoreError(400, '设计音色不能包含复刻样本或固化来源');
     }
-    return { kind: payload.kind, name, voiceDescription: validateDescription(payload.voiceDescription), sourceVoiceId: null };
+    return {
+      kind: payload.kind,
+      name,
+      voiceDescription: validateDescription(payload.voiceDescription),
+      previewText: validatePreviewText(payload.previewText),
+      sourceVoiceId: null,
+    };
   }
-  if (payload.voiceDescription !== undefined) {
-    throw new VoiceStoreError(400, '音色复刻不能包含设计描述');
+  if (payload.voiceDescription !== undefined || payload.previewText !== undefined) {
+    throw new VoiceStoreError(400, '音色复刻不能包含设计描述或试听文本');
   }
   return {
     kind: payload.kind,
     name,
+    previewText: null,
     sample: parseSampleDataUrl(payload.sampleDataUrl),
     sampleFileName: payload.sampleFileName,
     sourceVoiceId: validateSourceVoiceId(payload.sourceVoiceId),
@@ -309,9 +334,9 @@ export async function createVoice(database, storageDirectory, payload) {
   try {
     database.prepare(`
       INSERT INTO voices (
-        id, kind, name, voice_description, sample_file, sample_mime_type,
-        sample_file_name, sample_size, source_voice_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, kind, name, voice_description, sample_file, sample_mime_type,
+        sample_file_name, sample_size, source_voice_id, preview_text, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       normalized.kind,
@@ -322,6 +347,7 @@ export async function createVoice(database, storageDirectory, payload) {
       normalizeSampleFileName(normalized.sampleFileName, normalized.kind === 'clone' ? 'voice-sample.' + normalized.sample.extension : null),
       normalized.sample?.bytes.length ?? null,
       sourceVoiceId,
+      normalized.previewText,
       now,
       now,
     );
@@ -350,12 +376,13 @@ export async function updateVoice(database, storageDirectory, id, payload) {
       throw new VoiceStoreError(400, '设计音色不能包含复刻样本');
     }
     const description = payload.voiceDescription === undefined ? current.voice_description : validateDescription(payload.voiceDescription);
-    database.prepare('UPDATE voices SET name = ?, voice_description = ?, updated_at = ? WHERE id = ?').run(name, description, now, id);
+    const previewText = payload.previewText === undefined ? current.preview_text : validatePreviewText(payload.previewText);
+    database.prepare('UPDATE voices SET name = ?, voice_description = ?, preview_text = ?, updated_at = ? WHERE id = ?').run(name, description, previewText, now, id);
     return rowToVoice(database.prepare('SELECT * FROM voices WHERE id = ?').get(id));
   }
 
-  if (payload.voiceDescription !== undefined) {
-    throw new VoiceStoreError(400, '音色复刻不能包含设计描述');
+  if (payload.voiceDescription !== undefined || payload.previewText !== undefined) {
+    throw new VoiceStoreError(400, '音色复刻不能包含设计描述或试听文本');
   }
   if (payload.sampleDataUrl === undefined) {
     database.prepare('UPDATE voices SET name = ?, updated_at = ? WHERE id = ?').run(name, now, id);

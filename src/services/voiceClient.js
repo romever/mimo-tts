@@ -29,6 +29,9 @@ function validateVoiceProfile(profile) {
   if (profile.kind === 'design' && typeof profile.voiceDescription !== 'string') {
     throw new Error('本地音色服务返回的设计描述无效');
   }
+  if (profile.previewText !== null && profile.previewText !== undefined && typeof profile.previewText !== 'string') {
+    throw new Error('本地音色服务返回的试听文本无效');
+  }
   if (profile.kind === 'clone') {
     if (!profile.sample || typeof profile.sample !== 'object' || typeof profile.sample.available !== 'boolean') {
       throw new Error('本地音色服务返回的复刻样本信息无效');
@@ -71,6 +74,7 @@ function buildPayload(input) {
   };
   if (input.kind === 'design') {
     payload.voiceDescription = input.voiceDescription;
+    payload.previewText = input.previewText;
   }
   if (input.kind === 'clone' && input.sampleDataUrl) {
     payload.sampleDataUrl = input.sampleDataUrl;
