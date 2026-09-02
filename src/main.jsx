@@ -317,7 +317,6 @@ function TextEditor({ text, onChange, onInsert, onClear }) {
           <button type="button" onClick={() => onInsert('“”')}><FilePlus2 size={14} /> 多音字</button>
           <button type="button" onClick={() => onInsert('1,234.56')}><Activity size={14} /> 数字读法</button>
         </div>
-        <span className="editor-hint">assistant 消息将作为目标文本发送</span>
       </div>
     </section>
   );
