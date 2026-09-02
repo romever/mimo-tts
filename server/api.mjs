@@ -121,11 +121,14 @@ function validateFavoritePayload(payload) {
 
 function sendAudio(response, sample) {
   const safeFileName = sample.fileName.replace(/[\\\r\n"/]/g, '_');
+  const asciiFileName = safeFileName.replace(/[^\x20-\x7e]/g, '_');
+  const encodedFileName = encodeURIComponent(safeFileName).replace(/[!'()*]/g, (character) => '%' + character.charCodeAt(0).toString(16).toUpperCase());
   response.writeHead(200, {
     'Cache-Control': 'no-store',
     'Content-Type': sample.mimeType,
     'Content-Length': sample.bytes.length,
-    'Content-Disposition': 'inline; filename="' + safeFileName + '"',
+    // 兼容文件名只支持 ASCII 的客户端，完整文件名通过 RFC 5987 编码传递。
+    'Content-Disposition': 'inline; filename="' + asciiFileName + '"; filename*=UTF-8\'\'' + encodedFileName,
   });
   response.end(sample.bytes);
 }
