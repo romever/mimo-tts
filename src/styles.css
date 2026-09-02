@@ -231,7 +231,6 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
 .segment-card.error { border-color: #efcbd0; background: #fffdfd; }
 .segment-card.generating, .segment-card.queued { border-color: #d3cffd; }
 .segment-card-header { display: flex; align-items: center; gap: 9px; }
-.segment-index { width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto; color: #5f59d1; background: #efefff; border-radius: 7px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 750; }
 .segment-card-title { min-width: 0; display: grid; gap: 4px; flex: 1; }
 .segment-card-title strong { color: #3f4b5f; font-size: 11px; }
 .segment-card-title span { color: #a0a9b6; font-size: 9px; }
@@ -239,10 +238,6 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
 .segment-card-tools button { width: 25px; height: 25px; display: grid; place-items: center; padding: 0; color: #9ba4b2; background: transparent; border-radius: 5px; }
 .segment-card-tools button:hover { color: var(--accent-dark); background: #f2f1ff; }
 .segment-card-tools button:disabled { color: #c9ced7; cursor: not-allowed; }
-.segment-card-body { display: grid; grid-template-columns: minmax(0, 1fr) 190px; align-items: start; gap: 11px; margin-top: 11px; }
-.segment-card-body > textarea { width: 100%; min-height: 86px; resize: vertical; padding: 10px 11px; color: #4b576a; background: #fff; border: 1px solid #dfe4eb; border-radius: 7px; outline: 0; font-size: 11px; line-height: 1.7; }
-.segment-card-body > textarea::placeholder { color: #b0b8c3; }
-.segment-card-body > textarea:focus { border-color: #918cff; box-shadow: 0 0 0 3px rgba(99,91,255,0.1); }
 .compact-voice-field { margin-bottom: 0; }
 .compact-voice-field .field-label-row { margin-bottom: 6px; }
 .compact-voice-field .voice-picker-trigger { padding: 8px; }
@@ -250,8 +245,6 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
 .compact-voice-field .voice-copy strong { font-size: 10px; }
 .compact-voice-field .voice-copy small { font-size: 8px; }
 .compact-voice-field .voice-options { max-height: 220px; }
-.segment-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding-top: 9px; border-top: 1px solid #edf0f4; }
-.segment-card-status { min-width: 0; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .segment-status { display: inline-flex; align-items: center; gap: 5px; color: #929cab; font-size: 9px; font-weight: 700; white-space: nowrap; }
 .segment-status.ready { color: #2aa676; }
 .segment-status.generating, .segment-status.queued { color: #6f68d9; }
@@ -567,10 +560,6 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
   .segment-toolbar { align-items: flex-start; flex-direction: column; }
   .segment-toolbar > div { width: 100%; }
   .segment-toolbar > div button { flex: 1; }
-  .segment-card-body { grid-template-columns: 1fr; }
-  .segment-card-footer { align-items: flex-start; flex-direction: column; }
-  .segment-card-actions { width: 100%; }
-  .segment-card-actions button { flex: 1; }
   .segment-batch-actions { align-items: stretch; flex-direction: column; }
   .segment-batch-buttons { width: 100%; }
   .segment-batch-buttons button { flex: 1; }
@@ -597,14 +586,13 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
   .toast { right: 14px; bottom: 14px; }
 }
 
-/* 分段模式以文本编辑为主：卡片横向分栏，操作集中在同一条工具带。 */
+/* 分段模式以文本编辑为主：卡片单列铺开，操作集中在同一条工具带。 */
 .segment-editor-panel .segment-toolbar { margin-top: 13px; padding-bottom: 10px; }
 .segment-editor-panel .segment-toolbar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .segment-list { gap: 8px; margin-top: 10px; }
-.segment-card { display: grid; grid-template-columns: 38px minmax(0, 1fr) 168px 122px; align-items: stretch; column-gap: 11px; padding: 10px 11px; }
-.segment-card-index { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding-top: 1px; }
+.segment-card { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; padding: 10px 11px; }
 .segment-card-main { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
-.segment-card-header { min-height: 25px; display: flex; align-items: center; gap: 8px; }
+.segment-card-header { min-width: 0; min-height: 25px; display: flex; align-items: center; gap: 6px; }
 .segment-card-header > .segment-status { flex: 0 0 auto; }
 .segment-card-title { min-width: 0; display: flex; align-items: baseline; gap: 7px; flex: 1; }
 .segment-card-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -613,17 +601,18 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
 .segment-card-main > textarea::placeholder { color: #b0b8c3; }
 .segment-card-main > textarea:focus { border-color: #918cff; box-shadow: 0 0 0 3px rgba(99,91,255,0.1); }
 .segment-card-error { margin: 0; }
-.segment-card-voice { min-width: 0; display: flex; align-items: center; }
-.segment-card-voice .field-group { width: 100%; }
-.segment-card-voice .compact-voice-field .field-label-row { margin-bottom: 6px; }
-.segment-card-voice .compact-voice-field .voice-picker-trigger { min-height: 43px; padding: 7px 8px; }
-.segment-card-voice .compact-voice-field .voice-avatar { width: 24px; height: 24px; }
-.segment-card-voice .compact-voice-field .voice-copy { gap: 3px; }
+.segment-card-voice { min-width: 0; flex: 0 0 112px; display: flex; align-items: center; }
+.segment-card-voice .field-group { width: 100%; margin-bottom: 0; }
+.segment-card-voice .voice-picker { width: 100%; }
+.segment-card-voice .voice-picker-trigger { height: 25px; min-height: 25px; padding: 0 6px; gap: 5px; border-radius: 5px; font-size: 10px; }
+.segment-card-voice .voice-picker-trigger > svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.segment-card-voice .compact-voice-field .voice-copy { display: block; }
 .segment-card-voice .compact-voice-field .voice-copy strong { font-size: 10px; }
-.segment-card-voice .compact-voice-field .voice-copy small { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.segment-card-actions { min-width: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 6px; }
-.segment-preview-button, .segment-generate-button { width: 100%; min-height: 29px; padding: 0 7px; }
-.segment-download-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 100%; min-height: 29px; padding: 0 7px; color: #687487; background: #fff; border: 1px solid #e0e5ec; border-radius: 6px; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.segment-card-voice .voice-options { width: 176px; right: 0; left: auto; }
+.segment-card-actions { min-width: 0; display: flex; flex-direction: row; align-items: center; gap: 2px; flex: 0 0 auto; padding-left: 7px; border-left: 1px solid #edf0f4; }
+.segment-card-actions button { width: 25px; height: 25px; min-height: 25px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border-radius: 5px; }
+.segment-preview-button, .segment-generate-button { width: 25px; min-height: 25px; padding: 0; }
+.segment-download-button { display: grid; place-items: center; width: 25px; min-height: 25px; padding: 0; color: #687487; background: #fff; border: 1px solid #e0e5ec; border-radius: 5px; }
 .segment-download-button:hover { color: var(--accent-dark); border-color: #aaa7f9; background: #fafaff; }
 .segment-download-button:disabled { color: #b5bdc8; background: #f7f8fa; border-color: #e4e7ed; cursor: wait; }
 .segment-card-tools { gap: 1px; }
@@ -648,19 +637,22 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
 .workbench-active .segment-output-panel .output-actions { padding-left: 9px; border-left: 1px solid #edf0f4; }
 
 @media (max-width: 900px) and (min-width: 621px) {
-  .segment-card { grid-template-columns: 36px minmax(0, 1fr) 158px 112px; column-gap: 9px; }
+  .segment-card-voice { flex-basis: 104px; }
   .workbench-active .segment-output-panel .output-content { grid-template-columns: 36px minmax(0, 1fr) 168px 132px; }
 }
 
 @media (max-width: 620px) {
   .segment-editor-panel .segment-toolbar > span { white-space: normal; }
-  .segment-card { grid-template-columns: 35px minmax(0, 1fr); column-gap: 9px; row-gap: 10px; padding: 10px; }
-  .segment-card-index { grid-column: 1; grid-row: 1; }
-  .segment-card-main { grid-column: 2; grid-row: 1; }
-  .segment-card-voice { grid-column: 1 / -1; grid-row: 2; }
-  .segment-card-actions { grid-column: 1 / -1; grid-row: 3; flex-direction: row; }
+  .segment-card { grid-template-columns: minmax(0, 1fr); padding: 10px; }
+  .segment-card-header { flex-wrap: wrap; row-gap: 6px; }
+  .segment-card-header > .segment-card-title { order: 1; min-width: 90px; }
+  .segment-card-header > .segment-status { order: 2; }
+  .segment-card-header > .segment-card-voice { order: 3; flex: 0 0 98px; }
+  .segment-card-header > .segment-card-tools { order: 4; }
+  .segment-card-header > .segment-card-actions { order: 5; width: auto; flex: 0 0 auto; margin-left: auto; padding-top: 0; padding-left: 0; border-top: 0; border-left: 0; }
   .segment-card-main > textarea { min-height: 112px; }
-  .segment-card-actions button { flex: 1; }
+  .segment-card-tools button { width: 22px; height: 22px; }
+  .segment-card-actions button { flex: 0 0 auto; }
   .workbench-active .segment-output-panel .output-content { grid-template-columns: 38px minmax(0, 1fr); grid-template-areas: "badge meta" "wave wave" "controls controls" "seek seek" "actions actions"; gap: 10px; }
   .workbench-active .segment-output-panel .track-badge { width: 38px; height: 38px; }
   .workbench-active .segment-output-panel .waveform-wrap { display: block; }

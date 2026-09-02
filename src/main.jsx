@@ -279,14 +279,14 @@ function Topbar({ title, onOpenMenu, onOpenApi }) {
   );
 }
 
-function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreateVoice, voiceLoadError, label = '音色', showLibrary = true, allowCreate = true, compact = false, disabled = false }) {
+function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreateVoice, voiceLoadError, label = '音色', showLibrary = true, allowCreate = true, compact = false, disabled = false, showLabel = true, showIcon = true, showDetails = true }) {
   const [open, setOpen] = useState(false);
   const CurrentIcon = selectedVoice ? profileIcon(selectedVoice) : Volume2;
 
   if (!selectedVoice) {
     return (
       <div className={'field-group ' + (compact ? 'compact-voice-field' : '')}>
-        <div className="field-label-row"><span className="field-label">{label}</span>{showLibrary && <button type="button" className="plain-icon-button" disabled={disabled} onClick={onOpenLibrary}><Library size={14} /> 声音库</button>}</div>
+        {(showLabel || showLibrary) && <div className="field-label-row">{showLabel && <span className="field-label">{label}</span>}{showLibrary && <button type="button" className="plain-icon-button" disabled={disabled} onClick={onOpenLibrary}><Library size={14} /> 声音库</button>}</div>}
         <p className="error-text">当前音色不可用，请从声音库重新选择。</p>
       </div>
     );
@@ -299,12 +299,12 @@ function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreat
 
   return (
     <div className={'field-group ' + (compact ? 'compact-voice-field' : '')}>
-      <div className="field-label-row"><span className="field-label">{label}</span>{showLibrary && <button type="button" className="plain-icon-button" disabled={disabled} onClick={onOpenLibrary}><Library size={14} /> 管理声音库</button>}</div>
+      {(showLabel || showLibrary) && <div className="field-label-row">{showLabel && <span className="field-label">{label}</span>}{showLibrary && <button type="button" className="plain-icon-button" disabled={disabled} onClick={onOpenLibrary}><Library size={14} /> 管理声音库</button>}</div>}
       <div className="voice-picker">
-        <button type="button" className="voice-picker-trigger" disabled={disabled} onClick={() => setOpen((value) => !value)}>
-          <span className={'voice-avatar ' + selectedVoice.color}><CurrentIcon size={16} /></span>
-          <span className="voice-copy"><strong>{selectedVoice.name}</strong><small>{profileTypeLabel(selectedVoice)}{selectedVoice.language ? ' · ' + selectedVoice.language : ''}{selectedVoice.gender ? ' · ' + selectedVoice.gender : ''}</small></span>
-          {selectedVoice.favorite && <Star size={14} className="favorite-icon" fill="currentColor" />}
+        <button type="button" className="voice-picker-trigger" aria-label={!showLabel ? label + '：' + selectedVoice.name : undefined} disabled={disabled} onClick={() => setOpen((value) => !value)}>
+          {showIcon && <span className={'voice-avatar ' + selectedVoice.color}><CurrentIcon size={16} /></span>}
+          <span className="voice-copy"><strong>{selectedVoice.name}</strong>{showDetails && <small>{profileTypeLabel(selectedVoice)}{selectedVoice.language ? ' · ' + selectedVoice.language : ''}{selectedVoice.gender ? ' · ' + selectedVoice.gender : ''}</small>}</span>
+          {showIcon && selectedVoice.favorite && <Star size={14} className="favorite-icon" fill="currentColor" />}
           <ChevronDown size={16} className={open ? 'rotate-180' : ''} />
         </button>
         {open && (
@@ -557,30 +557,27 @@ function SegmentCard({ segment, index, total, voice, voices, disabled, previewin
 
   return (
     <article className={'segment-card ' + segment.status}>
-      <div className="segment-card-index">
-        <div className="segment-index">{String(index + 1).padStart(2, '0')}</div>
-      </div>
       <div className="segment-card-main">
         <div className="segment-card-header">
           <div className="segment-card-title"><strong>段落 {index + 1}</strong><span>{segment.text.length} 字</span></div>
           <SegmentStatus segment={segment} />
+          <div className="segment-card-voice">
+            <VoiceSelector selectedVoice={voice} voices={voices} onChange={(nextVoice) => onVoiceChange(segment.id, nextVoice.id)} label="段落音色" showLibrary={false} allowCreate={false} compact disabled={disabled || isGenerating} showLabel={false} showIcon={false} showDetails={false} />
+          </div>
           <div className="segment-card-tools">
             <button type="button" disabled={disabled || index === 0} aria-label={'段落 ' + (index + 1) + ' 上移'} title="上移" onClick={() => onMove(index, -1)}><ArrowUp size={14} /></button>
             <button type="button" disabled={disabled || index === total - 1} aria-label={'段落 ' + (index + 1) + ' 下移'} title="下移" onClick={() => onMove(index, 1)}><ArrowDown size={14} /></button>
             <button type="button" disabled={disabled} aria-label={'复制段落 ' + (index + 1)} title="复制" onClick={() => onDuplicate(index)}><Copy size={14} /></button>
             <button type="button" disabled={disabled || total <= 1} aria-label={'删除段落 ' + (index + 1)} title="删除" onClick={() => onDelete(index)}><Trash2 size={14} /></button>
           </div>
+          <div className="segment-card-actions">
+            <button type="button" className="segment-preview-button" disabled={disabled || !hasAudio} aria-label={previewingSegmentId === segment.id && isSegmentPreviewPlaying ? '暂停本段试听' : '试听本段'} title={previewingSegmentId === segment.id && isSegmentPreviewPlaying ? '暂停试听' : '试听'} onClick={() => onTogglePreview(segment)}>{previewingSegmentId === segment.id && isSegmentPreviewPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}</button>
+            <button type="button" className="segment-generate-button" disabled={disabled || isGenerating} aria-label={generateLabel} title={generateLabel} onClick={() => onGenerate(segment.id)}>{isGenerating ? <LoaderCircle size={14} className="spin" /> : segment.status === 'error' ? <RotateCcw size={14} /> : <AudioLines size={14} />}</button>
+            <button type="button" className="segment-download-button" disabled={disabled || !hasAudio} aria-label="下载本段" title="下载本段" onClick={() => onDownload(segment)}><Download size={14} /></button>
+          </div>
         </div>
         <textarea value={segment.text} maxLength={5000} disabled={disabled || isGenerating} aria-label={'段落 ' + (index + 1) + ' 文本'} placeholder="输入这一段要合成的文本..." onChange={(event) => onTextChange(segment.id, event.target.value)} />
         {segment.status === 'error' && <p className="segment-error segment-card-error"><CircleAlert size={13} /> {segment.error}</p>}
-      </div>
-      <div className="segment-card-voice">
-        <VoiceSelector selectedVoice={voice} voices={voices} onChange={(nextVoice) => onVoiceChange(segment.id, nextVoice.id)} label="段落音色" showLibrary={false} allowCreate={false} compact disabled={disabled || isGenerating} />
-      </div>
-      <div className="segment-card-actions">
-        <button type="button" className="segment-preview-button" disabled={disabled || !hasAudio} onClick={() => onTogglePreview(segment)}>{previewingSegmentId === segment.id && isSegmentPreviewPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />} {previewingSegmentId === segment.id && isSegmentPreviewPlaying ? '暂停' : '试听'}</button>
-        <button type="button" className="segment-generate-button" disabled={disabled || isGenerating} onClick={() => onGenerate(segment.id)}>{isGenerating ? <LoaderCircle size={14} className="spin" /> : segment.status === 'error' ? <RotateCcw size={14} /> : <AudioLines size={14} />} {generateLabel}</button>
-        <button type="button" className="segment-download-button" disabled={disabled || !hasAudio} onClick={() => onDownload(segment)}><Download size={14} /> 下载</button>
       </div>
     </article>
   );
