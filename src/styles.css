@@ -623,6 +623,9 @@ h2 { margin: 0; color: var(--ink); font-size: 16px; line-height: 1.3; letter-spa
 .segment-card-voice .compact-voice-field .voice-copy small { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .segment-card-actions { min-width: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 6px; }
 .segment-preview-button, .segment-generate-button { width: 100%; min-height: 29px; padding: 0 7px; }
+.segment-download-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: 100%; min-height: 29px; padding: 0 7px; color: #687487; background: #fff; border: 1px solid #e0e5ec; border-radius: 6px; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.segment-download-button:hover { color: var(--accent-dark); border-color: #aaa7f9; background: #fafaff; }
+.segment-download-button:disabled { color: #b5bdc8; background: #f7f8fa; border-color: #e4e7ed; cursor: wait; }
 .segment-card-tools { gap: 1px; }
 .segment-card-tools button { width: 23px; height: 23px; }
 .segment-batch-actions { margin-top: 10px; gap: 12px; }
