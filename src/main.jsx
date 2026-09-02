@@ -2,15 +2,19 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
   AudioLines,
   BookOpen,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleAlert,
   CircleHelp,
   Clock3,
   Code2,
+  Copy,
   Download,
   Eye,
   EyeOff,
@@ -41,6 +45,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { syncPlaybackPosition } from './services/audioPlayback';
+import { composeAudioSegments } from './services/audioComposer';
 import { fileExtensionForAudioBlob, fileToDataUrl, modelIdFor, synthesize } from './services/mimoClient';
 import { loadApiSettings, saveApiSettings } from './services/settingsClient';
 import {
@@ -71,6 +76,34 @@ const MAX_CLONE_BASE64_BYTES = 10 * 1024 * 1024;
 const CLONE_MIME_TYPES = new Set(['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav']);
 const DEFAULT_VOICE_DESCRIPTION = '一位年轻女性，音色清亮柔和，语速稍慢，像深夜电台主持人一样亲切。';
 const DEFAULT_PREVIEW_TEXT = '你好，这是 MiMo TTS Studio 的音色试听。';
+const SEGMENT_BATCH_CONCURRENCY = 3;
+
+let nextSegmentId = 1;
+
+function createSegment(text = '', voiceId = '') {
+  return {
+    id: 'segment-' + nextSegmentId++,
+    text,
+    voiceId,
+    status: 'idle',
+    audioBlob: null,
+    audioUrl: '',
+    duration: 0,
+    error: '',
+    generationRevision: 0,
+  };
+}
+
+function emptyMergedResult() {
+  return {
+    name: '尚未合成完整音频',
+    modeLabel: '全部段落生成满意后开始合成',
+    format: 'wav',
+    duration: 0,
+    sizeLabel: '',
+    audioUrl: '',
+  };
+}
 
 function presetProfile(voice, favoriteIds) {
   const id = PRESET_VOICE_PREFIX + voice.id;
@@ -246,14 +279,14 @@ function Topbar({ title, onOpenMenu, onOpenApi }) {
   );
 }
 
-function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreateVoice, voiceLoadError }) {
+function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreateVoice, voiceLoadError, label = '音色', showLibrary = true, allowCreate = true, compact = false, disabled = false }) {
   const [open, setOpen] = useState(false);
   const CurrentIcon = selectedVoice ? profileIcon(selectedVoice) : Volume2;
 
   if (!selectedVoice) {
     return (
-      <div className="field-group">
-        <div className="field-label-row"><span className="field-label">音色</span><button type="button" className="plain-icon-button" onClick={onOpenLibrary}><Library size={14} /> 声音库</button></div>
+      <div className={'field-group ' + (compact ? 'compact-voice-field' : '')}>
+        <div className="field-label-row"><span className="field-label">{label}</span>{showLibrary && <button type="button" className="plain-icon-button" disabled={disabled} onClick={onOpenLibrary}><Library size={14} /> 声音库</button>}</div>
         <p className="error-text">当前音色不可用，请从声音库重新选择。</p>
       </div>
     );
@@ -265,10 +298,10 @@ function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreat
   ];
 
   return (
-    <div className="field-group">
-      <div className="field-label-row"><span className="field-label">音色</span><button type="button" className="plain-icon-button" onClick={onOpenLibrary}><Library size={14} /> 管理声音库</button></div>
+    <div className={'field-group ' + (compact ? 'compact-voice-field' : '')}>
+      <div className="field-label-row"><span className="field-label">{label}</span>{showLibrary && <button type="button" className="plain-icon-button" disabled={disabled} onClick={onOpenLibrary}><Library size={14} /> 管理声音库</button>}</div>
       <div className="voice-picker">
-        <button type="button" className="voice-picker-trigger" onClick={() => setOpen((value) => !value)}>
+        <button type="button" className="voice-picker-trigger" disabled={disabled} onClick={() => setOpen((value) => !value)}>
           <span className={'voice-avatar ' + selectedVoice.color}><CurrentIcon size={16} /></span>
           <span className="voice-copy"><strong>{selectedVoice.name}</strong><small>{profileTypeLabel(selectedVoice)}{selectedVoice.language ? ' · ' + selectedVoice.language : ''}{selectedVoice.gender ? ' · ' + selectedVoice.gender : ''}</small></span>
           {selectedVoice.favorite && <Star size={14} className="favorite-icon" fill="currentColor" />}
@@ -282,7 +315,7 @@ function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreat
                 {group.items.map((item) => {
                   const ItemIcon = profileIcon(item);
                   return (
-                    <button type="button" className={'voice-option ' + (item.id === selectedVoice.id ? 'selected' : '')} key={item.id} onClick={() => { onChange(item); setOpen(false); }}>
+                    <button type="button" className={'voice-option ' + (item.id === selectedVoice.id ? 'selected' : '')} key={item.id} disabled={disabled} onClick={() => { onChange(item); setOpen(false); }}>
                       <span className={'voice-avatar small ' + item.color}><ItemIcon size={14} /></span>
                       <span><strong>{item.name}</strong><small>{profileTypeLabel(item)}{item.language ? ' · ' + item.language : ''}</small></span>
                       {item.favorite && <Star size={13} className="favorite-icon" fill="currentColor" />}
@@ -292,7 +325,7 @@ function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreat
                 })}
               </div>
             ))}
-            <button type="button" className="voice-option-create" onClick={() => { onCreateVoice('design'); setOpen(false); }}><Plus size={14} /> 新建音色</button>
+            {allowCreate && <button type="button" className="voice-option-create" disabled={disabled} onClick={() => { onCreateVoice('design'); setOpen(false); }}><Plus size={14} /> 新建音色</button>}
           </div>
         )}
       </div>
@@ -301,30 +334,40 @@ function VoiceSelector({ selectedVoice, voices, onChange, onOpenLibrary, onCreat
   );
 }
 
-function TextEditor({ text, onChange, onInsert, onClear }) {
+function WorkbenchModeToggle({ creationMode, onChange, disabled = false }) {
+  return (
+    <div className="workbench-mode-toggle" role="tablist" aria-label="创作模式">
+      <button type="button" role="tab" aria-selected={creationMode === 'single'} className={creationMode === 'single' ? 'active' : ''} disabled={disabled} onClick={() => onChange('single')}>单段生成</button>
+      <button type="button" role="tab" aria-selected={creationMode === 'segments'} className={creationMode === 'segments' ? 'active' : ''} disabled={disabled} onClick={() => onChange('segments')}>分段创作</button>
+    </div>
+  );
+}
+
+function TextEditor({ text, onChange, onInsert, onClear, creationMode, onCreationModeChange, disabled = false }) {
   const count = text.length;
   return (
     <section className="editor-panel">
       <div className="panel-heading">
         <div><span className="section-kicker">创作内容</span><h2>文本内容</h2></div>
-        <div className="heading-actions"><span className="counter">{count} / 5000</span><button type="button" className="clear-button" onClick={onClear}><Trash2 size={14} /> 清空</button></div>
+        <div className="heading-actions"><WorkbenchModeToggle creationMode={creationMode} onChange={onCreationModeChange} disabled={disabled} /><span className="counter">{count} / 5000</span><button type="button" className="clear-button" disabled={disabled} onClick={onClear}><Trash2 size={14} /> 清空</button></div>
       </div>
-        <textarea id="text-content" name="text" value={text} maxLength={5000} onChange={(event) => onChange(event.target.value)} placeholder="输入想要合成的文本..." aria-label="文本内容" />
+        <textarea id="text-content" name="text" value={text} maxLength={5000} disabled={disabled} onChange={(event) => onChange(event.target.value)} placeholder="输入想要合成的文本..." aria-label="文本内容" />
       <div className="editor-footer">
         <div className="editor-tools">
-          <button type="button" onClick={() => onInsert('（停顿片刻）')}><Clock3 size={14} /> 插入停顿</button>
-          <button type="button" onClick={() => onInsert('（轻笑）')}><Sparkles size={14} /> 发音词典</button>
-          <button type="button" onClick={() => onInsert('“”')}><FilePlus2 size={14} /> 多音字</button>
-          <button type="button" onClick={() => onInsert('1,234.56')}><Activity size={14} /> 数字读法</button>
+          <button type="button" disabled={disabled} onClick={() => onInsert('（停顿片刻）')}><Clock3 size={14} /> 插入停顿</button>
+          <button type="button" disabled={disabled} onClick={() => onInsert('（轻笑）')}><Sparkles size={14} /> 发音词典</button>
+          <button type="button" disabled={disabled} onClick={() => onInsert('“”')}><FilePlus2 size={14} /> 多音字</button>
+          <button type="button" disabled={disabled} onClick={() => onInsert('1,234.56')}><Activity size={14} /> 数字读法</button>
         </div>
       </div>
     </section>
   );
 }
 
-function TagInput({ tags, onRemove, onAdd }) {
+function TagInput({ tags, onRemove, onAdd, disabled = false }) {
   const [value, setValue] = useState('');
   const addTag = () => {
+    if (disabled) return;
     const next = value.trim();
     if (next && !tags.includes(next)) onAdd(next);
     setValue('');
@@ -332,15 +375,15 @@ function TagInput({ tags, onRemove, onAdd }) {
   return (
     <div className="tag-input">
       <div className="tag-list">
-        {tags.map((tag) => <span className="tag" key={tag}>{tag}<button type="button" aria-label={'移除' + tag} onClick={() => onRemove(tag)}><X size={12} /></button></span>)}
-        <input id="audio-tag-input" name="audioTag" value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addTag(); } }} onBlur={addTag} placeholder="添加标签" aria-label="添加音频标签" />
-        <button type="button" className="add-tag-button" onClick={addTag}><Plus size={14} /> 添加标签</button>
+        {tags.map((tag) => <span className="tag" key={tag}>{tag}<button type="button" disabled={disabled} aria-label={'移除' + tag} onClick={() => onRemove(tag)}><X size={12} /></button></span>)}
+        <input id="audio-tag-input" name="audioTag" value={value} disabled={disabled} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addTag(); } }} onBlur={addTag} placeholder="添加标签" aria-label="添加音频标签" />
+        <button type="button" className="add-tag-button" disabled={disabled} onClick={addTag}><Plus size={14} /> 添加标签</button>
       </div>
     </div>
   );
 }
 
-function StyleField({ value, onChange, mode }) {
+function StyleField({ value, onChange, mode, disabled = false }) {
   const placeholder = mode === 'design'
     ? '例如：一位年轻女性，音色清亮柔和，语速稍慢，像深夜电台主持人一样亲切。'
     : '例如：语气自然、亲切，语速适中，情感稳定，适合知识类内容讲解。';
@@ -349,14 +392,14 @@ function StyleField({ value, onChange, mode }) {
     : '语气自然、亲切，语速适中，情感稳定，适合知识类内容讲解。';
   return (
     <div className="field-group">
-      <div className="field-label-row"><label htmlFor="workbench-style">{mode === 'design' ? '音色描述' : '风格指令'}</label><button type="button" className="help-link" onClick={() => onChange(example)}><CircleHelp size={14} /> 示例</button></div>
-      <textarea id="workbench-style" name={mode === 'design' ? 'voiceDescription' : 'styleInstruction'} className="compact-textarea" aria-label={mode === 'design' ? '音色描述' : '风格指令'} value={value} maxLength={mode === 'design' ? 600 : 200} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+      <div className="field-label-row"><label htmlFor="workbench-style">{mode === 'design' ? '音色描述' : '风格指令'}</label><button type="button" className="help-link" disabled={disabled} onClick={() => onChange(example)}><CircleHelp size={14} /> 示例</button></div>
+      <textarea id="workbench-style" name={mode === 'design' ? 'voiceDescription' : 'styleInstruction'} className="compact-textarea" disabled={disabled} aria-label={mode === 'design' ? '音色描述' : '风格指令'} value={value} maxLength={mode === 'design' ? 600 : 200} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
       <div className="textarea-count">{value.length} / {mode === 'design' ? 600 : 200}</div>
     </div>
   );
 }
 
-function CloneUploader({ file, onFileChange }) {
+function CloneUploader({ file, onFileChange, disabled = false }) {
   const inputRef = useRef(null);
   const handleChange = async (event) => {
     const nextFile = event.target.files?.[0];
@@ -370,8 +413,8 @@ function CloneUploader({ file, onFileChange }) {
   return (
     <div className="field-group">
       <div className="field-label-row"><label htmlFor="workbench-sample-file">音色样本</label><span className="field-note">MP3 / WAV · Base64 ≤ 10 MB</span></div>
-      <button type="button" className={'upload-box ' + (file?.fileName && !file?.error ? 'has-file' : '')} onClick={() => inputRef.current?.click()}>
-        <input id="workbench-sample-file" name="sample" ref={inputRef} type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden aria-label="上传音色样本" onChange={handleChange} />
+      <button type="button" disabled={disabled} className={'upload-box ' + (file?.fileName && !file?.error ? 'has-file' : '')} onClick={() => inputRef.current?.click()}>
+        <input id="workbench-sample-file" name="sample" ref={inputRef} type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden disabled={disabled} aria-label="上传音色样本" onChange={handleChange} />
         {file?.fileName ? (
           <><span className={'upload-icon ' + (file.error ? '' : 'success')}><Check size={18} /></span><span className="upload-copy"><strong>{file.fileName}</strong><small>{file.size ? (file.size / 1024 / 1024).toFixed(2) + ' MB · ' : ''}{file.error ? '样本不可用' : file.isNew ? '已准备好' : '已保存'}</small></span><ChevronRight size={16} /></>
         ) : (
@@ -383,18 +426,45 @@ function CloneUploader({ file, onFileChange }) {
   );
 }
 
-function OutputSettings({ format, onFormatChange, stream, onStreamChange, disabled }) {
+function OutputSettings({ format, onFormatChange, stream, onStreamChange, disabled, locked = false, mixed = false }) {
   return (
     <>
       <div className="field-group">
         <div className="field-label-row"><label htmlFor="output-format">输出格式</label></div>
-        <div className="select-wrap"><select id="output-format" name="format" aria-label="输出格式" value={format} onChange={(event) => onFormatChange(event.target.value)}>{FORMAT_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select><ChevronDown size={16} /></div>
+        <div className="select-wrap"><select id="output-format" name="format" aria-label="输出格式" value={format} disabled={locked} onChange={(event) => onFormatChange(event.target.value)}>{FORMAT_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select><ChevronDown size={16} /></div>
       </div>
       <div className={'stream-row ' + (disabled ? 'disabled' : '')}>
-        <div><div className="stream-title"><span className="stream-label">流式输出</span><Info size={14} /></div><p>{disabled ? '设计音色与音色复刻暂不支持低延迟流式' : '实时返回音频流，降低首字延迟'}</p></div>
-        <button type="button" className={'switch ' + (stream && !disabled ? 'on' : '')} disabled={disabled} aria-label="切换流式输出" onClick={() => onStreamChange(!stream)}><span /></button>
+        <div><div className="stream-title"><span className="stream-label">流式输出</span><Info size={14} /></div><p>{disabled ? '设计音色与音色复刻暂不支持低延迟流式' : mixed ? '预置音色段落使用流式，设计与复刻段落按标准请求' : '实时返回音频流，降低首字延迟'}</p></div>
+        <button type="button" className={'switch ' + (stream && !disabled ? 'on' : '')} disabled={disabled || locked} aria-label="切换流式输出" onClick={() => onStreamChange(!stream)}><span /></button>
       </div>
     </>
+  );
+}
+
+function SegmentedInspector(props) {
+  const {
+    selectedVoice, voices, onVoiceChange, onOpenLibrary, onCreateVoice, voiceLoadError,
+    styleInstruction, onStyleChange, tags, onRemoveTag, onAddTag,
+    format, onFormatChange, stream, onStreamChange, optimizePreview, onOptimizePreview,
+    apiReady, generationLocked,
+  } = props;
+
+  return (
+    <aside className="inspector-panel">
+      <div className="inspector-heading"><div><span className="section-kicker">生成配置</span><h2>全局配置</h2></div><span className={'api-ready ' + (apiReady ? '' : 'demo')}><span /> {apiReady ? '已配置' : '演示模式'}</span></div>
+      <VoiceSelector selectedVoice={selectedVoice} voices={voices} onChange={onVoiceChange} onOpenLibrary={onOpenLibrary} onCreateVoice={onCreateVoice} voiceLoadError={voiceLoadError} label="默认音色" disabled={generationLocked} />
+      <p className="mode-description">每段音色在内容卡片中单独设置；这里的默认音色只会应用到新建段落。分段模式使用声音库中已保存的音色资产。</p>
+      <StyleField mode="style" value={styleInstruction} onChange={onStyleChange} disabled={generationLocked} />
+      <div className="field-group">
+        <div className="field-label-row"><span className="field-label">音频标签</span><Info size={14} /></div>
+        <TagInput tags={tags} onRemove={onRemoveTag} onAdd={onAddTag} disabled={generationLocked} />
+        <div className="suggested-tags">{AUDIO_TAGS.map((tag) => <button type="button" key={tag} disabled={generationLocked} onClick={() => onAddTag(tag)}>+ {tag}</button>)}</div>
+      </div>
+      <div className="optimize-row"><div><span className="optimize-label">优化文本预览</span><p>对设计音色段落使用模型文本优化</p></div><button type="button" className={'switch ' + (optimizePreview ? 'on' : '')} disabled={generationLocked} aria-label="切换优化文本预览" onClick={() => onOptimizePreview(!optimizePreview)}><span /></button></div>
+      <OutputSettings format={format} onFormatChange={onFormatChange} stream={stream} onStreamChange={onStreamChange} mixed locked={generationLocked} />
+      <div className="segmented-inspector-note"><Info size={14} /><span>各段会分别调用对应模型，生成完成后才能合成完整 WAV。</span></div>
+      <div className="inspector-footer"><span><Zap size={14} /> 混合音色批量生成</span><span>浏览器端合成 WAV</span></div>
+    </aside>
   );
 }
 
@@ -404,29 +474,32 @@ function Inspector(props) {
     styleInstruction, onStyleChange, voiceDescription, onVoiceDescriptionChange,
     cloneFile, onCloneFileChange, tags, onRemoveTag, onAddTag,
     format, onFormatChange, stream, onStreamChange, optimizePreview, onOptimizePreview, apiReady,
-    onSaveCurrentVoice, voiceSampleLoading,
+    onSaveCurrentVoice, voiceSampleLoading, creationMode, generationLocked,
   } = props;
+  if (creationMode === 'segments') {
+    return <SegmentedInspector {...props} />;
+  }
   const isDesign = mode === 'design';
   const isClone = mode === 'clone';
   return (
     <aside className="inspector-panel">
       <div className="inspector-heading"><div><span className="section-kicker">生成配置</span><h2>音色配置</h2></div><span className={'api-ready ' + (apiReady ? '' : 'demo')}><span /> {apiReady ? '已配置' : '演示模式'}</span></div>
-      <VoiceSelector selectedVoice={selectedVoice} voices={voices} onChange={onVoiceChange} onOpenLibrary={onOpenLibrary} onCreateVoice={onCreateVoice} voiceLoadError={voiceLoadError} />
+      <VoiceSelector selectedVoice={selectedVoice} voices={voices} onChange={onVoiceChange} onOpenLibrary={onOpenLibrary} onCreateVoice={onCreateVoice} voiceLoadError={voiceLoadError} disabled={generationLocked} />
       {selectedVoice && <p className="mode-description">{MODE_CONFIG[mode].description}</p>}
-      {isClone && <CloneUploader file={cloneFile} onFileChange={onCloneFileChange} />}
-      {selectedVoice && <StyleField mode={isDesign ? 'design' : 'style'} value={isDesign ? voiceDescription : styleInstruction} onChange={isDesign ? onVoiceDescriptionChange : onStyleChange} />}
+      {isClone && <CloneUploader file={cloneFile} onFileChange={onCloneFileChange} disabled={generationLocked} />}
+      {selectedVoice && <StyleField mode={isDesign ? 'design' : 'style'} value={isDesign ? voiceDescription : styleInstruction} onChange={isDesign ? onVoiceDescriptionChange : onStyleChange} disabled={generationLocked} />}
       {!isDesign && selectedVoice && (
         <div className="field-group">
           <div className="field-label-row"><span className="field-label">音频标签</span><Info size={14} /></div>
-          <TagInput tags={tags} onRemove={onRemoveTag} onAdd={onAddTag} />
-          <div className="suggested-tags">{AUDIO_TAGS.map((tag) => <button type="button" key={tag} onClick={() => onAddTag(tag)}>+ {tag}</button>)}</div>
+          <TagInput tags={tags} onRemove={onRemoveTag} onAdd={onAddTag} disabled={generationLocked} />
+          <div className="suggested-tags">{AUDIO_TAGS.map((tag) => <button type="button" key={tag} disabled={generationLocked} onClick={() => onAddTag(tag)}>+ {tag}</button>)}</div>
         </div>
       )}
-      {isDesign && selectedVoice && <div className="optimize-row"><div><span className="optimize-label">优化文本预览</span><p>让模型根据音色描述润色播报文本</p></div><button type="button" className={'switch ' + (optimizePreview ? 'on' : '')} aria-label="切换优化文本预览" onClick={() => onOptimizePreview(!optimizePreview)}><span /></button></div>}
+      {isDesign && selectedVoice && <div className="optimize-row"><div><span className="optimize-label">优化文本预览</span><p>让模型根据音色描述润色播报文本</p></div><button type="button" className={'switch ' + (optimizePreview ? 'on' : '')} disabled={generationLocked} aria-label="切换优化文本预览" onClick={() => onOptimizePreview(!optimizePreview)}><span /></button></div>}
       {(isDesign || isClone) && selectedVoice && (
-        <button type="button" className="save-voice-link" onClick={onSaveCurrentVoice} disabled={voiceSampleLoading}><Save size={14} /> 保存当前配置为新音色</button>
+        <button type="button" className="save-voice-link" onClick={onSaveCurrentVoice} disabled={voiceSampleLoading || generationLocked}><Save size={14} /> 保存当前配置为新音色</button>
       )}
-      {selectedVoice && <OutputSettings format={format} onFormatChange={onFormatChange} stream={stream} onStreamChange={onStreamChange} disabled={isDesign || isClone} />}
+      {selectedVoice && <OutputSettings format={format} onFormatChange={onFormatChange} stream={stream} onStreamChange={onStreamChange} disabled={isDesign || isClone} locked={generationLocked} />}
       {selectedVoice && <div className="inspector-footer"><span><Zap size={14} /> {modelIdFor(mode)}</span><span>24kHz mono</span></div>}
     </aside>
   );
@@ -437,23 +510,125 @@ function Waveform({ progress = 0 }) {
   return <div className="waveform" aria-label="音频波形">{bars.map((height, index) => <span key={index} className={index / bars.length <= progress ? 'played' : ''} style={{ height: height + '%' }} />)}</div>;
 }
 
-function OutputPanel({ result, audioRef, isPlaying, progress, duration, onToggle, onSeek, onJump, onRename, onDownload }) {
+function OutputPanel({ result, audioRef, isPlaying, progress, duration, onToggle, onSeek, onJump, onRename, onDownload, kicker = '最近生成', title = '输出结果', downloadLabel = '下载音频', emptyMessage = '生成后显示音频波形', className = '' }) {
   const hasAudio = Boolean(result.audioUrl);
   const displayDuration = duration || result.duration;
   const trackDetails = [result.modeLabel, hasAudio && result.format.toUpperCase(), hasAudio && formatTime(displayDuration), hasAudio && result.sizeLabel].filter(Boolean).join(' · ');
   return (
-    <section className="output-panel">
+    <section className={'output-panel ' + className}>
       <audio key={result.audioUrl || 'empty-audio'} ref={audioRef} preload="auto" src={result.audioUrl || undefined} onTimeUpdate={(event) => onSeek(event.currentTarget.currentTime / (event.currentTarget.duration || 1), false)} onLoadedMetadata={(event) => onSeek(0, true, event.currentTarget.duration)} onEnded={() => onToggle(false)} />
-      <div className="output-heading"><div><span className="section-kicker">最近生成</span><h2>输出结果</h2></div><div className={'generation-status ' + (hasAudio ? 'success' : 'empty')}><span>{hasAudio ? <Check size={13} /> : <Activity size={13} />}</span>{hasAudio ? '生成完成' : '等待生成'}</div></div>
+      <div className="output-heading"><div><span className="section-kicker">{kicker}</span><h2>{title}</h2></div><div className={'generation-status ' + (hasAudio ? 'success' : 'empty')}><span>{hasAudio ? <Check size={13} /> : <Activity size={13} />}</span>{hasAudio ? '生成完成' : '等待生成'}</div></div>
       <div className="output-content">
         <div className="track-badge"><Music2 size={22} /></div>
         <div className="track-meta"><div className="track-title"><strong>{result.name}</strong><button type="button" aria-label="重命名" disabled={!hasAudio} onClick={onRename}><Settings2 size={13} /></button></div><span>{trackDetails}</span></div>
-        <div className="waveform-wrap"><Waveform progress={hasAudio ? progress : 0} /><div className="track-time">{hasAudio ? formatTime(displayDuration * progress) + ' / ' + formatTime(displayDuration) : '生成后显示音频波形'}</div></div>
+        <div className="waveform-wrap"><Waveform progress={hasAudio ? progress : 0} /><div className="track-time">{hasAudio ? formatTime(displayDuration * progress) + ' / ' + formatTime(displayDuration) : emptyMessage}</div></div>
         <div className="player-controls"><button type="button" aria-label="后退 10 秒" disabled={!hasAudio} onClick={() => onJump(-10)}><RotateCcw size={17} /></button><button type="button" aria-label="上一段" disabled={!hasAudio} onClick={() => onJump(-5)}><ChevronLeft size={20} /></button><button type="button" className="play-button" disabled={!hasAudio} onClick={() => onToggle()} aria-label={isPlaying ? '暂停' : '播放'}>{isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}</button><button type="button" aria-label="下一段" disabled={!hasAudio} onClick={() => onJump(5)}><ChevronRight size={20} /></button><button type="button" aria-label="前进 10 秒" disabled={!hasAudio} onClick={() => onJump(10)}><RotateCcw size={17} className="flip-x" /></button></div>
         <input id="audio-progress" name="progress" className="seek-slider" type="range" min="0" max="1" step="0.001" value={progress} disabled={!hasAudio} aria-label="音频进度" onChange={(event) => onSeek(Number(event.target.value), true)} />
-        <div className="output-actions"><button type="button" className="download-button" disabled={!hasAudio} onClick={onDownload}><Download size={16} /> 下载音频 <ChevronDown size={15} /></button></div>
+        <div className="output-actions"><button type="button" className="download-button" disabled={!hasAudio} onClick={onDownload}><Download size={16} /> {downloadLabel} <ChevronDown size={15} /></button></div>
       </div>
     </section>
+  );
+}
+
+function SegmentStatus({ segment }) {
+  const statusConfig = {
+    idle: { label: '待生成', icon: <Activity size={13} /> },
+    queued: { label: '排队中', icon: <Clock3 size={13} /> },
+    generating: { label: '生成中', icon: <LoaderCircle size={13} className="spin" /> },
+    ready: { label: '已生成', icon: <Check size={13} /> },
+    error: { label: '生成失败', icon: <CircleAlert size={13} /> },
+  };
+  const config = statusConfig[segment.status];
+  return <span className={'segment-status ' + segment.status}>{config.icon} {config.label}{segment.status === 'ready' && segment.duration ? ' · ' + formatTime(segment.duration) : ''}</span>;
+}
+
+function SegmentCard({ segment, index, total, voice, voices, disabled, previewingSegmentId, isSegmentPreviewPlaying, onTextChange, onVoiceChange, onMove, onDuplicate, onDelete, onGenerate, onTogglePreview }) {
+  const hasAudio = segment.status === 'ready' && Boolean(segment.audioUrl);
+  const isGenerating = segment.status === 'generating' || segment.status === 'queued';
+  const generateLabel = segment.status === 'generating'
+    ? '生成中…'
+    : segment.status === 'queued'
+      ? '排队中'
+      : segment.status === 'error'
+        ? '重试'
+        : segment.status === 'ready'
+          ? '重新生成'
+          : '生成本段';
+
+  return (
+    <article className={'segment-card ' + segment.status}>
+      <div className="segment-card-index">
+        <div className="segment-index">{String(index + 1).padStart(2, '0')}</div>
+      </div>
+      <div className="segment-card-main">
+        <div className="segment-card-header">
+          <div className="segment-card-title"><strong>段落 {index + 1}</strong><span>{segment.text.length} 字</span></div>
+          <SegmentStatus segment={segment} />
+          <div className="segment-card-tools">
+            <button type="button" disabled={disabled || index === 0} aria-label={'段落 ' + (index + 1) + ' 上移'} title="上移" onClick={() => onMove(index, -1)}><ArrowUp size={14} /></button>
+            <button type="button" disabled={disabled || index === total - 1} aria-label={'段落 ' + (index + 1) + ' 下移'} title="下移" onClick={() => onMove(index, 1)}><ArrowDown size={14} /></button>
+            <button type="button" disabled={disabled} aria-label={'复制段落 ' + (index + 1)} title="复制" onClick={() => onDuplicate(index)}><Copy size={14} /></button>
+            <button type="button" disabled={disabled || total <= 1} aria-label={'删除段落 ' + (index + 1)} title="删除" onClick={() => onDelete(index)}><Trash2 size={14} /></button>
+          </div>
+        </div>
+        <textarea value={segment.text} maxLength={5000} disabled={disabled || isGenerating} aria-label={'段落 ' + (index + 1) + ' 文本'} placeholder="输入这一段要合成的文本..." onChange={(event) => onTextChange(segment.id, event.target.value)} />
+        {segment.status === 'error' && <p className="segment-error segment-card-error"><CircleAlert size={13} /> {segment.error}</p>}
+      </div>
+      <div className="segment-card-voice">
+        <VoiceSelector selectedVoice={voice} voices={voices} onChange={(nextVoice) => onVoiceChange(segment.id, nextVoice.id)} label="段落音色" showLibrary={false} allowCreate={false} compact disabled={disabled || isGenerating} />
+      </div>
+      <div className="segment-card-actions">
+        <button type="button" className="segment-preview-button" disabled={disabled || !hasAudio} onClick={() => onTogglePreview(segment)}>{previewingSegmentId === segment.id && isSegmentPreviewPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />} {previewingSegmentId === segment.id && isSegmentPreviewPlaying ? '暂停' : '试听'}</button>
+        <button type="button" className="segment-generate-button" disabled={disabled || isGenerating} onClick={() => onGenerate(segment.id)}>{isGenerating ? <LoaderCircle size={14} className="spin" /> : segment.status === 'error' ? <RotateCcw size={14} /> : <AudioLines size={14} />} {generateLabel}</button>
+      </div>
+    </article>
+  );
+}
+
+function SegmentEditor({ segments, voices, creationMode, onCreationModeChange, disabled, onSplit, onAdd, onTextChange, onVoiceChange, onMove, onDuplicate, onDelete, previewingSegmentId, isSegmentPreviewPlaying, onGenerate, onTogglePreview }) {
+  const totalChars = segments.reduce((total, segment) => total + segment.text.length, 0);
+  return (
+    <section className="editor-panel segment-editor-panel">
+      <div className="panel-heading">
+        <div><span className="section-kicker">创作内容</span><h2>分段内容</h2></div>
+        <div className="heading-actions"><WorkbenchModeToggle creationMode={creationMode} onChange={onCreationModeChange} disabled={disabled} /><span className="counter">{segments.length} 段 · {totalChars} 字</span></div>
+      </div>
+      <div className="segment-toolbar"><span>每段可使用不同音色，按原顺序合成</span><div><button type="button" className="segment-tool-button" disabled={disabled || !segments.length} onClick={onSplit}><ListPlusIcon /> 按换行拆分</button><button type="button" className="segment-tool-button primary" disabled={disabled} onClick={onAdd}><Plus size={14} /> 新增段落</button></div></div>
+      <div className="segment-list">
+        {segments.map((segment, index) => <SegmentCard key={segment.id} segment={segment} index={index} total={segments.length} voice={voices.find((voice) => voice.id === segment.voiceId)} voices={voices} disabled={disabled} previewingSegmentId={previewingSegmentId} isSegmentPreviewPlaying={isSegmentPreviewPlaying} onTextChange={onTextChange} onVoiceChange={onVoiceChange} onMove={onMove} onDuplicate={onDuplicate} onDelete={onDelete} onGenerate={onGenerate} onTogglePreview={onTogglePreview} />)}
+      </div>
+      <div className="segment-editor-note"><Info size={14} /><span>段落音色来自声音库中已保存的资产；右侧默认音色只影响新建段落。</span></div>
+    </section>
+  );
+}
+
+function ListPlusIcon() {
+  return <span className="list-plus-icon"><FilePlus2 size={14} /></span>;
+}
+
+function SegmentBatchActions({ segments, batchProgress, isBatchGenerating, isComposing, busy, onGenerateAll, onCompose, canCompose }) {
+  const pendingCount = segments.filter((segment) => segment.status !== 'ready' || !segment.audioBlob).length;
+  const readyCount = segments.filter((segment) => segment.status === 'ready' && segment.audioBlob).length;
+  const hasFailures = segments.some((segment) => segment.status === 'error');
+  const batchLabel = isBatchGenerating
+    ? '正在生成 ' + batchProgress.completed + ' / ' + batchProgress.total
+    : pendingCount
+      ? '批量生成 ' + pendingCount + ' 段'
+      : '全部段落已生成';
+  return (
+    <div className="segment-batch-actions">
+      <div className="segment-batch-summary"><strong>{readyCount} / {segments.length} 段已生成</strong><span>{hasFailures ? '有段落失败，可单独重试' : isComposing ? '正在准备完整音频…' : '生成满意后即可合成完整音频'}</span></div>
+      <div className="segment-batch-buttons"><button type="button" className="generate-button segment-batch-button" disabled={busy || !pendingCount} onClick={onGenerateAll}>{isBatchGenerating ? <LoaderCircle size={18} className="spin" /> : <AudioLines size={19} />}<span>{batchLabel}</span>{!isBatchGenerating && <span className="generate-meta">并发 3</span>}</button><button type="button" className="primary-button compose-button" disabled={busy || !canCompose} onClick={onCompose}>{isComposing ? <LoaderCircle size={15} className="spin" /> : <AudioLines size={15} />} {isComposing ? '合成中…' : '合成完整音频'}</button></div>
+    </div>
+  );
+}
+
+function SegmentOutputPanel({ result, audioRef, isPlaying, progress, duration, onToggle, onSeek, onJump, onRename, onDownload, segmentAudioRef, onSegmentEnded, onSegmentMetadata }) {
+  return (
+    <>
+      <audio ref={segmentAudioRef} preload="auto" hidden onEnded={onSegmentEnded} onLoadedMetadata={onSegmentMetadata} />
+      <OutputPanel result={result} audioRef={audioRef} isPlaying={isPlaying} progress={progress} duration={duration} onToggle={onToggle} onSeek={onSeek} onJump={onJump} onRename={onRename} onDownload={onDownload} kicker="最终结果" title="完整音频" downloadLabel="下载完整音频" emptyMessage="全部段落生成满意后合成完整 WAV" className="segment-output-panel" />
+    </>
   );
 }
 
@@ -462,14 +637,18 @@ function GenerateButton({ isGenerating, canGenerate, onGenerate, stream }) {
 }
 
 function Workbench(props) {
+  const isSegmented = props.creationMode === 'segments';
+  const busy = props.isGenerating || props.isBatchGenerating || props.isComposing || Boolean(props.generatingSegmentId);
   return (
     <div className="workbench-page">
-      <div className="editor-column">
-        <TextEditor text={props.text} onChange={props.onTextChange} onInsert={props.onInsert} onClear={props.onClear} />
-        <div className="editor-actions"><div className="text-suggestions">{STYLE_TAGS.map((tag) => <button type="button" key={tag} onClick={() => props.onInsert('（' + tag + '）')}>{tag}</button>)}</div><GenerateButton isGenerating={props.isGenerating} canGenerate={props.canGenerate} onGenerate={props.onGenerate} stream={props.stream && props.mode === 'preset'} /></div>
+      <div className="workbench-main-column">
+        <div className="editor-column">
+          {isSegmented ? <SegmentEditor segments={props.segments} voices={props.voices} creationMode={props.creationMode} onCreationModeChange={props.onCreationModeChange} disabled={busy} onSplit={props.onSplitSegments} onAdd={props.onAddSegment} onTextChange={props.onSegmentTextChange} onVoiceChange={props.onSegmentVoiceChange} onMove={props.onMoveSegment} onDuplicate={props.onDuplicateSegment} onDelete={props.onDeleteSegment} previewingSegmentId={props.previewingSegmentId} isSegmentPreviewPlaying={props.isSegmentPreviewPlaying} onGenerate={props.onGenerateSegment} onTogglePreview={props.onToggleSegmentPreview} /> : <TextEditor text={props.text} onChange={props.onTextChange} onInsert={props.onInsert} onClear={props.onClear} creationMode={props.creationMode} onCreationModeChange={props.onCreationModeChange} disabled={busy} />}
+          {isSegmented ? <SegmentBatchActions segments={props.segments} batchProgress={props.batchProgress} isBatchGenerating={props.isBatchGenerating} isComposing={props.isComposing} busy={busy} onGenerateAll={props.onGenerateAllSegments} onCompose={props.onComposeSegments} canCompose={props.canComposeSegments} /> : <div className="editor-actions"><div className="text-suggestions">{STYLE_TAGS.map((tag) => <button type="button" disabled={busy} key={tag} onClick={() => props.onInsert('（' + tag + '）')}>{tag}</button>)}</div><GenerateButton isGenerating={props.isGenerating} canGenerate={props.canGenerate} onGenerate={props.onGenerate} stream={props.stream && props.mode === 'preset'} /></div>}
+        </div>
+        {isSegmented ? <SegmentOutputPanel result={props.mergedResult} audioRef={props.mergedAudioRef} isPlaying={props.isMergedPlaying} progress={props.mergedProgress} duration={props.mergedDuration} onToggle={props.onToggleMerged} onSeek={props.onSeekMerged} onJump={props.onJumpMerged} onRename={props.onRenameMerged} onDownload={props.onDownloadMerged} segmentAudioRef={props.segmentAudioRef} onSegmentEnded={props.onSegmentPreviewEnded} onSegmentMetadata={props.onSegmentPreviewMetadata} /> : <OutputPanel result={props.result} audioRef={props.audioRef} isPlaying={props.isPlaying} progress={props.progress} duration={props.duration} onToggle={props.onToggle} onSeek={props.onSeek} onJump={props.onJump} onRename={props.onRename} onDownload={props.onDownload} />}
       </div>
-      <Inspector {...props} />
-      <OutputPanel result={props.result} audioRef={props.audioRef} isPlaying={props.isPlaying} progress={props.progress} duration={props.duration} onToggle={props.onToggle} onSeek={props.onSeek} onJump={props.onJump} onRename={props.onRename} onDownload={props.onDownload} />
+      <Inspector {...props} generationLocked={busy} />
     </div>
   );
 }
@@ -759,7 +938,9 @@ function Toast({ toast, onClose }) {
 function App() {
   const [page, setPage] = useState('workbench');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [creationMode, setCreationMode] = useState('single');
   const [text, setText] = useState(INITIAL_TEXT);
+  const [segments, setSegments] = useState([]);
   const [styleInstruction, setStyleInstruction] = useState('语气自然、亲切，语速适中，情感稳定，适合知识类内容讲解。');
   const [selectedVoiceId, setSelectedVoiceId] = useState(PRESET_VOICE_PREFIX + '冰糖');
   const [voiceDescription, setVoiceDescription] = useState('');
@@ -772,6 +953,9 @@ function App() {
   const [savedApiKey, setSavedApiKey] = useState('');
   const [apiPersistenceStatus, setApiPersistenceStatus] = useState('loading');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isBatchGenerating, setIsBatchGenerating] = useState(false);
+  const [generatingSegmentId, setGeneratingSegmentId] = useState('');
+  const [batchProgress, setBatchProgress] = useState({ completed: 0, total: 0, failed: 0 });
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -784,11 +968,27 @@ function App() {
   const [detailVoiceId, setDetailVoiceId] = useState('');
   const [editorState, setEditorState] = useState(null);
   const [voiceSaving, setVoiceSaving] = useState(false);
+  const [mergedResult, setMergedResult] = useState(emptyMergedResult);
+  const [isComposing, setIsComposing] = useState(false);
+  const [isMergedPlaying, setIsMergedPlaying] = useState(false);
+  const [mergedProgress, setMergedProgress] = useState(0);
+  const [mergedDuration, setMergedDuration] = useState(0);
+  const [previewingSegmentId, setPreviewingSegmentId] = useState('');
+  const [isSegmentPreviewPlaying, setIsSegmentPreviewPlaying] = useState(false);
   const audioRef = useRef(null);
+  const mergedAudioRef = useRef(null);
+  const segmentAudioRef = useRef(null);
   const previewAudioRef = useRef(null);
   const previewUrlRef = useRef('');
   const previewRequestRef = useRef(0);
   const resultUrlRef = useRef('');
+  const mergedUrlRef = useRef('');
+  const segmentAudioUrlsRef = useRef(new Set());
+  const segmentsRef = useRef([]);
+  const segmentRequestTokensRef = useRef(new Map());
+  const segmentPreviewRequestRef = useRef(0);
+  const batchRunRef = useRef(0);
+  const voiceSamplePromiseCacheRef = useRef(new Map());
   const voiceSampleCacheRef = useRef(new Map());
   const previewSampleCacheRef = useRef(new Map());
   const voiceSampleRequestRef = useRef(0);
@@ -814,6 +1014,18 @@ function App() {
   }, [cloneFile, selectedVoice, voiceDescription]);
 
   useEffect(() => {
+    segmentsRef.current = segments;
+    const activeUrls = new Set(segments.map((segment) => segment.audioUrl).filter(Boolean));
+    activeUrls.forEach((audioUrl) => segmentAudioUrlsRef.current.add(audioUrl));
+    for (const audioUrl of segmentAudioUrlsRef.current) {
+      if (!activeUrls.has(audioUrl)) {
+        URL.revokeObjectURL(audioUrl);
+        segmentAudioUrlsRef.current.delete(audioUrl);
+      }
+    }
+  }, [segments]);
+
+  useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(null), 4200);
     return () => window.clearTimeout(timer);
@@ -826,6 +1038,17 @@ function App() {
     }
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
     if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+    if (segmentAudioRef.current) {
+      segmentAudioRef.current.pause();
+      segmentAudioRef.current.removeAttribute('src');
+    }
+    if (mergedAudioRef.current) {
+      mergedAudioRef.current.pause();
+      mergedAudioRef.current.removeAttribute('src');
+    }
+    segmentAudioUrlsRef.current.forEach((audioUrl) => URL.revokeObjectURL(audioUrl));
+    segmentAudioUrlsRef.current.clear();
+    if (mergedUrlRef.current) URL.revokeObjectURL(mergedUrlRef.current);
   }, []);
 
   useEffect(() => {
@@ -838,12 +1061,117 @@ function App() {
     setDuration(0);
   }, [result.audioUrl]);
 
+  useEffect(() => {
+    if (!mergedAudioRef.current) return;
+    mergedAudioRef.current.pause();
+    mergedAudioRef.current.load();
+    setIsMergedPlaying(false);
+    setMergedProgress(0);
+    setMergedDuration(0);
+  }, [mergedResult.audioUrl]);
+
   const title = page === 'workbench' ? '工作台' : page === 'library' ? '声音库' : page === 'history' ? '历史记录' : 'API 设置';
   const updateApi = (patch) => setApi((current) => ({ ...current, ...patch }));
   const insertText = (value) => setText((current) => current + (current && !current.endsWith('\n') ? ' ' : '') + value);
   const addTag = (tag) => setTags((current) => current.includes(tag) ? current : [...current, tag]);
   const removeTag = (tag) => setTags((current) => current.filter((item) => item !== tag));
   const showToast = (type, message) => setToast({ type, message });
+
+  const invalidateMergedAudio = () => {
+    mergedAudioRef.current?.pause();
+    if (mergedUrlRef.current) {
+      URL.revokeObjectURL(mergedUrlRef.current);
+      mergedUrlRef.current = '';
+    }
+    setMergedResult(emptyMergedResult());
+    setIsMergedPlaying(false);
+    setMergedProgress(0);
+    setMergedDuration(0);
+  };
+
+  const stopSegmentPreview = () => {
+    segmentPreviewRequestRef.current += 1;
+    if (segmentAudioRef.current) {
+      segmentAudioRef.current.pause();
+      segmentAudioRef.current.removeAttribute('src');
+      segmentAudioRef.current.load();
+    }
+    setPreviewingSegmentId('');
+    setIsSegmentPreviewPlaying(false);
+  };
+
+  const markSegmentDraft = (segmentId, patch) => {
+    segmentRequestTokensRef.current.set(segmentId, (segmentRequestTokensRef.current.get(segmentId) || 0) + 1);
+    if (previewingSegmentId === segmentId) stopSegmentPreview();
+    setSegments((current) => current.map((segment) => {
+      if (segment.id !== segmentId) return segment;
+      return {
+        ...segment,
+        ...patch,
+        status: 'idle',
+        audioBlob: null,
+        audioUrl: '',
+        duration: 0,
+        error: '',
+        generationRevision: segment.generationRevision + 1,
+      };
+    }));
+    invalidateMergedAudio();
+  };
+
+  const updateSegmentText = (segmentId, value) => markSegmentDraft(segmentId, { text: value });
+  const updateSegmentVoice = (segmentId, voiceId) => markSegmentDraft(segmentId, { voiceId });
+
+  const addSegment = () => {
+    setSegments((current) => [...current, createSegment('', selectedVoiceId)]);
+    invalidateMergedAudio();
+  };
+
+  const duplicateSegment = (index) => {
+    const source = segmentsRef.current[index];
+    if (!source) return;
+    const copy = createSegment(source.text, source.voiceId);
+    setSegments((current) => [...current.slice(0, index + 1), copy, ...current.slice(index + 1)]);
+    invalidateMergedAudio();
+  };
+
+  const deleteSegment = (index) => {
+    if (segmentsRef.current.length <= 1) {
+      showToast('error', '至少保留一个段落');
+      return;
+    }
+    const deletedSegment = segmentsRef.current[index];
+    if (!deletedSegment) return;
+    if (previewingSegmentId === deletedSegment.id) stopSegmentPreview();
+    segmentRequestTokensRef.current.delete(deletedSegment.id);
+    setSegments((current) => current.filter((_, segmentIndex) => segmentIndex !== index));
+    invalidateMergedAudio();
+  };
+
+  const moveSegment = (index, direction) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= segmentsRef.current.length) return;
+    setSegments((current) => {
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+    invalidateMergedAudio();
+  };
+
+  const splitSegmentsByNewline = () => {
+    const nextSegments = [];
+    segmentsRef.current.forEach((segment) => {
+      const parts = segment.text.split(/\r?\n+/).map((part) => part.trim()).filter(Boolean);
+      parts.forEach((part) => nextSegments.push(createSegment(part, segment.voiceId)));
+    });
+    // 全部为空时保留一个可编辑的空段落，避免分段编辑器失去新增入口。
+    if (!nextSegments.length) nextSegments.push(createSegment('', selectedVoiceId));
+    stopSegmentPreview();
+    setSegments(nextSegments);
+    invalidateMergedAudio();
+    showToast('success', '已按换行拆分为 ' + nextSegments.length + ' 段');
+  };
 
   const reloadVoices = useCallback(async () => {
     setVoiceLoadStatus('loading');
@@ -1079,6 +1407,7 @@ function App() {
   const handleGenerate = async () => {
     if (!activeVoiceProfile) { showToast('error', '请先从声音库选择音色'); return; }
     if (!text.trim()) { showToast('error', '请先输入要合成的文本'); return; }
+    if (text.length > 5000) { showToast('error', '单段文本不能超过 5000 字，请切换到分段模式生成'); return; }
     if (mode === 'design' && !voiceDescription.trim()) { showToast('error', '设计音色需要填写音色描述'); return; }
     if (mode === 'clone' && !cloneFile?.dataUrl) { showToast('error', '音色复刻需要先读取或上传音频样本'); return; }
     if (!api.apiKey.trim()) { showToast('error', '请先在 API 设置中配置 API Key'); return; }
@@ -1188,17 +1517,51 @@ function App() {
     (selectedVoice.kind === 'design' && voiceDescription.trim() !== selectedVoice.voiceDescription.trim())
     || (selectedVoice.kind === 'clone' && cloneFile?.isNew)
   ));
+
+  const changeCreationMode = (nextMode) => {
+    if (nextMode === creationMode) return;
+    if (isBatchGenerating || isComposing || generatingSegmentId) {
+      showToast('error', '请等待当前生成任务完成后再切换创作模式');
+      return;
+    }
+    if (nextMode === 'segments') {
+      if (voiceDraftDirty && !window.confirm('当前音色配置尚未保存，分段模式只使用声音库中的已保存音色，是否继续？')) return;
+      const segmentText = segmentsRef.current.map((segment) => segment.text).join('\n');
+      if (!segmentsRef.current.length || text !== segmentText) {
+        stopSegmentPreview();
+        invalidateMergedAudio();
+        setSegments([createSegment(text, selectedVoiceId)]);
+      }
+      setCreationMode('segments');
+      return;
+    }
+    if (mergedAudioRef.current) mergedAudioRef.current.pause();
+    setIsMergedPlaying(false);
+    setText(segmentsRef.current.map((segment) => segment.text).join('\n'));
+    stopSegmentPreview();
+    setCreationMode('single');
+  };
+
   const selectVoice = (voiceToUse) => {
     if (voiceToUse.id === selectedVoiceId) return;
     if (page === 'workbench' && voiceDraftDirty && !window.confirm('当前音色配置尚未保存，切换音色后修改会丢失，是否继续？')) return;
     setSelectedVoiceId(voiceToUse.id);
   };
   const navigate = (nextPage) => {
+    if (isBatchGenerating || isComposing || generatingSegmentId) {
+      showToast('error', '请等待当前生成任务完成后再离开工作台');
+      return;
+    }
     const hasWorkbenchVoiceEditor = editorState?.source === 'workbench';
     if (page === 'workbench' && nextPage !== 'workbench' && (voiceDraftDirty || hasWorkbenchVoiceEditor)) {
       if (!window.confirm('当前音色配置尚未保存，离开后修改会丢失，是否继续？')) return;
       setEditorState(null);
       setDetailVoiceId('');
+    }
+    if (page === 'workbench' && nextPage !== 'workbench') {
+      stopSegmentPreview();
+      mergedAudioRef.current?.pause();
+      setIsMergedPlaying(false);
     }
     setPage(nextPage);
   };
@@ -1215,6 +1578,202 @@ function App() {
       },
       source: 'workbench',
     });
+  };
+
+  const resolveSegmentVoiceProfile = async (voiceId) => {
+    const voiceProfile = voices.find((voiceItem) => voiceItem.id === voiceId);
+    if (!voiceProfile) {
+      throw new Error('段落选择的音色已不存在，请重新选择声音库中的音色');
+    }
+    if (voiceProfile.kind !== 'clone') return voiceProfile;
+    if (voiceProfile.sample?.available === false) {
+      throw new Error('音色“' + voiceProfile.name + '”的样本文件不存在，请重新上传');
+    }
+
+    let sampleDataUrl = voiceSampleCacheRef.current.get(voiceProfile.id);
+    if (!sampleDataUrl) {
+      let samplePromise = voiceSamplePromiseCacheRef.current.get(voiceProfile.id);
+      if (!samplePromise) {
+        samplePromise = loadVoiceSample(voiceProfile.id)
+          .then((dataUrl) => {
+            voiceSampleCacheRef.current.set(voiceProfile.id, dataUrl);
+            return dataUrl;
+          })
+          .finally(() => {
+            voiceSamplePromiseCacheRef.current.delete(voiceProfile.id);
+          });
+        voiceSamplePromiseCacheRef.current.set(voiceProfile.id, samplePromise);
+      }
+      sampleDataUrl = await samplePromise;
+    }
+    return { ...voiceProfile, sampleDataUrl };
+  };
+
+  const buildSegmentGenerationOptions = () => ({
+    endpoint: api.endpoint,
+    apiKey: api.apiKey,
+    styleInstruction,
+    format,
+    stream,
+    optimizeTextPreview: optimizePreview,
+  });
+
+  const nextSegmentRequestToken = (segmentId) => {
+    const token = (segmentRequestTokensRef.current.get(segmentId) || 0) + 1;
+    segmentRequestTokensRef.current.set(segmentId, token);
+    return token;
+  };
+
+  const generateSegmentAudio = async (segmentSnapshot, options, batchRunId = null) => {
+    const requestToken = nextSegmentRequestToken(segmentSnapshot.id);
+    const generationRevision = segmentSnapshot.generationRevision + 1;
+    setSegments((current) => current.map((segment) => segment.id === segmentSnapshot.id ? {
+      ...segment,
+      status: 'generating',
+      audioBlob: null,
+      audioUrl: '',
+      duration: 0,
+      error: '',
+      generationRevision,
+    } : segment));
+
+    try {
+      const voiceProfile = await resolveSegmentVoiceProfile(segmentSnapshot.voiceId);
+      const audioBlob = await synthesize({ ...options, voiceProfile, text: segmentSnapshot.text });
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const isCurrentRequest = segmentRequestTokensRef.current.get(segmentSnapshot.id) === requestToken;
+      const isCurrentBatch = batchRunId === null || batchRunRef.current === batchRunId;
+      if (!isCurrentRequest || !isCurrentBatch) {
+        URL.revokeObjectURL(audioUrl);
+        return { status: 'stale' };
+      }
+      setSegments((current) => current.map((segment) => segment.id === segmentSnapshot.id ? {
+        ...segment,
+        status: 'ready',
+        audioBlob,
+        audioUrl,
+        duration: 0,
+        error: '',
+        generationRevision,
+      } : segment));
+      return { status: 'ready' };
+    } catch (error) {
+      const isCurrentRequest = segmentRequestTokensRef.current.get(segmentSnapshot.id) === requestToken;
+      const isCurrentBatch = batchRunId === null || batchRunRef.current === batchRunId;
+      if (!isCurrentRequest || !isCurrentBatch) return { status: 'stale' };
+      const message = error instanceof Error ? error.message : '该段落生成失败';
+      setSegments((current) => current.map((segment) => segment.id === segmentSnapshot.id ? {
+        ...segment,
+        status: 'error',
+        audioBlob: null,
+        audioUrl: '',
+        duration: 0,
+        error: message,
+        generationRevision,
+      } : segment));
+      return { status: 'error', error: message };
+    }
+  };
+
+  const setSegmentValidationErrors = (invalidSegments) => {
+    const messages = new Map(invalidSegments.map(({ id, message }) => [id, message]));
+    invalidSegments.forEach(({ id }) => nextSegmentRequestToken(id));
+    setSegments((current) => current.map((segment) => {
+      const message = messages.get(segment.id);
+      if (!message) return segment;
+      return { ...segment, status: 'error', audioBlob: null, audioUrl: '', duration: 0, error: message, generationRevision: segment.generationRevision + 1 };
+    }));
+    invalidateMergedAudio();
+  };
+
+  const generateSingleSegment = async (segmentId) => {
+    if (isBatchGenerating || isComposing || generatingSegmentId) return;
+    const segment = segmentsRef.current.find((item) => item.id === segmentId);
+    if (!segment) return;
+    if (!segment.text.trim()) {
+      setSegmentValidationErrors([{ id: segment.id, message: '请填写段落文本后再生成' }]);
+      showToast('error', '请先填写这一段的文本');
+      return;
+    }
+    if (segment.text.length > 5000) {
+      setSegmentValidationErrors([{ id: segment.id, message: '单段文本不能超过 5000 字' }]);
+      showToast('error', '这一段文本不能超过 5000 字');
+      return;
+    }
+    if (!voices.some((voiceItem) => voiceItem.id === segment.voiceId)) {
+      setSegmentValidationErrors([{ id: segment.id, message: '段落音色不存在，请重新选择' }]);
+      showToast('error', '请为这一段重新选择音色');
+      return;
+    }
+    if (!api.apiKey.trim()) {
+      showToast('error', '请先在 API 设置中配置 API Key');
+      return;
+    }
+    stopSegmentPreview();
+    invalidateMergedAudio();
+    setGeneratingSegmentId(segmentId);
+    try {
+      const outcome = await generateSegmentAudio(segment, buildSegmentGenerationOptions());
+      if (outcome.status === 'ready') showToast('success', '第 ' + (segmentsRef.current.findIndex((item) => item.id === segmentId) + 1) + ' 段已生成');
+      if (outcome.status === 'error') showToast('error', '第 ' + (segmentsRef.current.findIndex((item) => item.id === segmentId) + 1) + ' 段生成失败：' + outcome.error);
+    } finally {
+      setGeneratingSegmentId((current) => current === segmentId ? '' : current);
+    }
+  };
+
+  const generateAllSegments = async () => {
+    if (isBatchGenerating || isComposing || generatingSegmentId) return;
+    if (!api.apiKey.trim()) {
+      showToast('error', '请先在 API 设置中配置 API Key');
+      return;
+    }
+    const snapshot = segmentsRef.current;
+    const invalidSegments = snapshot.flatMap((segment) => {
+      if (!segment.text.trim()) return [{ id: segment.id, message: '请填写段落文本后再批量生成' }];
+      if (segment.text.length > 5000) return [{ id: segment.id, message: '单段文本不能超过 5000 字' }];
+      if (!voices.some((voiceItem) => voiceItem.id === segment.voiceId)) return [{ id: segment.id, message: '段落音色不存在，请重新选择' }];
+      return [];
+    });
+    if (invalidSegments.length) {
+      setSegmentValidationErrors(invalidSegments);
+      showToast('error', '请先修正标记为失败的段落');
+      return;
+    }
+
+    const pendingSegments = snapshot.filter((segment) => segment.status !== 'ready' || !segment.audioBlob);
+    if (!pendingSegments.length) {
+      showToast('success', '所有段落都已生成，无需重复请求');
+      return;
+    }
+
+    const batchRunId = batchRunRef.current + 1;
+    batchRunRef.current = batchRunId;
+    const options = buildSegmentGenerationOptions();
+    setIsBatchGenerating(true);
+    setBatchProgress({ completed: 0, total: pendingSegments.length, failed: 0 });
+    stopSegmentPreview();
+    invalidateMergedAudio();
+    setSegments((current) => current.map((segment) => pendingSegments.some((pending) => pending.id === segment.id) ? { ...segment, status: 'queued', audioBlob: null, audioUrl: '', duration: 0, error: '' } : segment));
+
+    let cursor = 0;
+    let failedCount = 0;
+    const worker = async () => {
+      while (cursor < pendingSegments.length) {
+        const segment = pendingSegments[cursor];
+        cursor += 1;
+        const outcome = await generateSegmentAudio(segment, options, batchRunId);
+        if (outcome.status === 'error') failedCount += 1;
+        setBatchProgress((current) => ({ ...current, completed: current.completed + 1, failed: current.failed + (outcome.status === 'error' ? 1 : 0) }));
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: Math.min(SEGMENT_BATCH_CONCURRENCY, pendingSegments.length) }, () => worker()));
+      if (failedCount) showToast('error', '批量生成完成：' + (pendingSegments.length - failedCount) + ' 段成功，' + failedCount + ' 段失败');
+      else showToast('success', '已完成 ' + pendingSegments.length + ' 段音频生成');
+    } finally {
+      if (batchRunRef.current === batchRunId) setIsBatchGenerating(false);
+    }
   };
 
   const detailVoice = voices.find((voiceItem) => voiceItem.id === detailVoiceId);
@@ -1245,13 +1804,140 @@ function App() {
     if (nextName?.trim()) setResult((current) => ({ ...current, name: nextName.trim() }));
   };
 
+  const toggleSegmentPreview = async (segment) => {
+    if (segment.status !== 'ready' || !segment.audioUrl || isBatchGenerating || isComposing || generatingSegmentId) return;
+    if (previewingSegmentId === segment.id) {
+      if (isSegmentPreviewPlaying) {
+        segmentAudioRef.current?.pause();
+        setIsSegmentPreviewPlaying(false);
+      } else {
+        const audio = segmentAudioRef.current;
+        if (!audio) return;
+        const requestId = segmentPreviewRequestRef.current;
+        try {
+          await audio.play();
+          if (requestId !== segmentPreviewRequestRef.current) return;
+          setIsSegmentPreviewPlaying(true);
+        } catch (error) {
+          if (requestId !== segmentPreviewRequestRef.current) return;
+          showToast('error', error instanceof Error ? error.message : '段落试听失败');
+          stopSegmentPreview();
+        }
+      }
+      return;
+    }
+
+    stopSegmentPreview();
+    const requestId = segmentPreviewRequestRef.current;
+    const audio = segmentAudioRef.current;
+    if (!audio) return;
+    setPreviewingSegmentId(segment.id);
+    setIsSegmentPreviewPlaying(false);
+    audio.src = segment.audioUrl;
+    audio.load();
+    try {
+      await audio.play();
+      if (requestId !== segmentPreviewRequestRef.current) return;
+      setIsSegmentPreviewPlaying(true);
+    } catch (error) {
+      if (requestId !== segmentPreviewRequestRef.current) return;
+      showToast('error', error instanceof Error ? error.message : '段落试听失败');
+      stopSegmentPreview();
+    }
+  };
+
+  const handleSegmentPreviewEnded = () => {
+    if (segmentAudioRef.current) segmentAudioRef.current.currentTime = 0;
+    setIsSegmentPreviewPlaying(false);
+  };
+
+  const handleSegmentPreviewMetadata = (event) => {
+    const segmentId = previewingSegmentId;
+    const nextDuration = event.currentTarget.duration;
+    if (!segmentId || !Number.isFinite(nextDuration)) return;
+    setSegments((current) => current.map((segment) => segment.id === segmentId ? { ...segment, duration: nextDuration } : segment));
+  };
+
+  const toggleMergedPlayback = async (forcedValue) => {
+    if (!mergedAudioRef.current || !mergedResult.audioUrl) return;
+    const nextPlaying = typeof forcedValue === 'boolean' ? forcedValue : !isMergedPlaying;
+    try {
+      if (nextPlaying) await mergedAudioRef.current.play();
+      else mergedAudioRef.current.pause();
+      setIsMergedPlaying(nextPlaying);
+    } catch (error) {
+      setIsMergedPlaying(false);
+      showToast('error', error instanceof Error ? error.message : '完整音频播放失败');
+    }
+  };
+
+  const seekMergedAudio = (nextProgress, shouldSeek, nextDuration) => {
+    if (nextDuration) setMergedDuration(nextDuration);
+    setMergedProgress(nextProgress);
+    syncPlaybackPosition(mergedAudioRef.current, nextProgress, shouldSeek);
+  };
+
+  const jumpMergedAudio = (seconds) => {
+    if (!mergedAudioRef.current || !Number.isFinite(mergedAudioRef.current.duration)) return;
+    const nextTime = Math.min(mergedAudioRef.current.duration, Math.max(0, mergedAudioRef.current.currentTime + seconds));
+    mergedAudioRef.current.currentTime = nextTime;
+    setMergedProgress(nextTime / mergedAudioRef.current.duration);
+  };
+
+  const downloadMergedAudio = () => {
+    if (!mergedResult.audioUrl) return;
+    const link = document.createElement('a');
+    link.href = mergedResult.audioUrl;
+    link.download = mergedResult.name + '.wav';
+    link.click();
+  };
+
+  const renameMergedAudio = () => {
+    const nextName = window.prompt('重命名完整音频', mergedResult.name);
+    if (nextName?.trim()) setMergedResult((current) => ({ ...current, name: nextName.trim() }));
+  };
+
+  const canComposeSegments = Boolean(segments.length) && segments.every((segment) => segment.status === 'ready' && segment.audioBlob);
+  const composeSegments = async () => {
+    if (!canComposeSegments || isBatchGenerating || isComposing || generatingSegmentId) return;
+    const snapshot = segmentsRef.current;
+    const revisions = new Map(snapshot.map((segment) => [segment.id, segment.generationRevision]));
+    setIsComposing(true);
+    stopSegmentPreview();
+    invalidateMergedAudio();
+    try {
+      const composed = await composeAudioSegments(snapshot.map((segment) => segment.audioBlob));
+      const isCurrent = snapshot.length === segmentsRef.current.length && snapshot.every((segment) => {
+        const current = segmentsRef.current.find((item) => item.id === segment.id);
+        return current && revisions.get(segment.id) === current.generationRevision && current.audioBlob;
+      });
+      if (!isCurrent) return;
+      const audioUrl = URL.createObjectURL(composed.blob);
+      if (mergedUrlRef.current) URL.revokeObjectURL(mergedUrlRef.current);
+      mergedUrlRef.current = audioUrl;
+      setMergedResult({
+        name: '工作台·多音色合成_' + new Date().toISOString().slice(0, 10).replaceAll('-', ''),
+        modeLabel: '多音色 · ' + snapshot.length + ' 段',
+        format: 'wav',
+        duration: composed.duration,
+        sizeLabel: (composed.blob.size / 1024).toFixed(0) + ' KB',
+        audioUrl,
+      });
+      showToast('success', '完整音频已合成，可以试听或下载');
+    } catch (error) {
+      showToast('error', error instanceof Error ? error.message : '完整音频合成失败');
+    } finally {
+      setIsComposing(false);
+    }
+  };
+
   return (
     <div className={'app-shell ' + (page === 'workbench' ? 'workbench-active' : '')}>
       <Sidebar page={page} onNavigate={navigate} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} apiReady={apiReady} />
       <main className="main-area">
         <Topbar title={title} onOpenMenu={() => setMobileOpen(true)} onOpenApi={() => navigate('api')} />
         <div className="page-scroller">
-          {page === 'workbench' && <Workbench mode={mode} selectedVoice={selectedVoice} voices={voices} onVoiceChange={selectVoice} onOpenLibrary={() => navigate('library')} onCreateVoice={openCreateVoice} voiceLoadError={voiceError} text={text} onTextChange={setText} onInsert={insertText} onClear={() => setText('')} styleInstruction={styleInstruction} onStyleChange={setStyleInstruction} voiceDescription={voiceDescription} onVoiceDescriptionChange={setVoiceDescription} cloneFile={cloneFile} onCloneFileChange={setCloneFile} tags={tags} onRemoveTag={removeTag} onAddTag={addTag} format={format} onFormatChange={setFormat} stream={stream} onStreamChange={setStream} optimizePreview={optimizePreview} onOptimizePreview={setOptimizePreview} isGenerating={isGenerating} canGenerate={canGenerate} onGenerate={handleGenerate} onSaveCurrentVoice={saveCurrentVoiceConfig} voiceSampleLoading={voiceSampleLoading} result={result} audioRef={audioRef} isPlaying={isPlaying} progress={progress} duration={duration} onToggle={togglePlayback} onSeek={seekAudio} onJump={jumpAudio} onRename={renameAudio} onDownload={downloadAudio} apiReady={apiReady} />}
+          {page === 'workbench' && <Workbench creationMode={creationMode} onCreationModeChange={changeCreationMode} mode={mode} selectedVoice={selectedVoice} voices={voices} onVoiceChange={selectVoice} onOpenLibrary={() => navigate('library')} onCreateVoice={openCreateVoice} voiceLoadError={voiceError} text={text} onTextChange={setText} onInsert={insertText} onClear={() => setText('')} styleInstruction={styleInstruction} onStyleChange={setStyleInstruction} voiceDescription={voiceDescription} onVoiceDescriptionChange={setVoiceDescription} cloneFile={cloneFile} onCloneFileChange={setCloneFile} tags={tags} onRemoveTag={removeTag} onAddTag={addTag} format={format} onFormatChange={setFormat} stream={stream} onStreamChange={setStream} optimizePreview={optimizePreview} onOptimizePreview={setOptimizePreview} isGenerating={isGenerating} canGenerate={canGenerate} onGenerate={handleGenerate} onSaveCurrentVoice={saveCurrentVoiceConfig} voiceSampleLoading={voiceSampleLoading} result={result} audioRef={audioRef} isPlaying={isPlaying} progress={progress} duration={duration} onToggle={togglePlayback} onSeek={seekAudio} onJump={jumpAudio} onRename={renameAudio} onDownload={downloadAudio} apiReady={apiReady} segments={segments} onSplitSegments={splitSegmentsByNewline} onAddSegment={addSegment} onSegmentTextChange={updateSegmentText} onSegmentVoiceChange={updateSegmentVoice} onMoveSegment={moveSegment} onDuplicateSegment={duplicateSegment} onDeleteSegment={deleteSegment} previewingSegmentId={previewingSegmentId} isSegmentPreviewPlaying={isSegmentPreviewPlaying} onGenerateSegment={generateSingleSegment} onToggleSegmentPreview={toggleSegmentPreview} isBatchGenerating={isBatchGenerating} generatingSegmentId={generatingSegmentId} batchProgress={batchProgress} onGenerateAllSegments={generateAllSegments} isComposing={isComposing} canComposeSegments={canComposeSegments} onComposeSegments={composeSegments} mergedResult={mergedResult} mergedAudioRef={mergedAudioRef} isMergedPlaying={isMergedPlaying} mergedProgress={mergedProgress} mergedDuration={mergedDuration} onToggleMerged={toggleMergedPlayback} onSeekMerged={seekMergedAudio} onJumpMerged={jumpMergedAudio} onRenameMerged={renameMergedAudio} onDownloadMerged={downloadMergedAudio} segmentAudioRef={segmentAudioRef} onSegmentPreviewEnded={handleSegmentPreviewEnded} onSegmentPreviewMetadata={handleSegmentPreviewMetadata} />}
           {page === 'library' && <VoiceLibrary voices={voices} selectedVoiceId={selectedVoiceId} voiceLoadStatus={voiceLoadStatus} voiceError={voiceError} onRetry={reloadVoices} onOpenVoice={(voiceToOpen) => setDetailVoiceId(voiceToOpen.id)} onPreview={previewVoice} previewingVoice={previewingVoice} onCreateVoice={openCreateVoice} onToggleFavorite={toggleFavorite} />}
           {page === 'history' && <HistoryPage onReuse={() => { navigate('workbench'); showToast('success', '已将历史配置载入工作台'); }} />}
           {page === 'api' && <ApiSettings api={api} savedApiKey={savedApiKey} onApiChange={updateApi} onSave={persistApiSettings} persistenceStatus={apiPersistenceStatus} />}
